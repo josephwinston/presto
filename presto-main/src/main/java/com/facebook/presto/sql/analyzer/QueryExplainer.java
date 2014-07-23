@@ -14,6 +14,8 @@
 package com.facebook.presto.sql.analyzer;
 
 import com.facebook.presto.metadata.Metadata;
+import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.planner.DistributedLogicalPlanner;
 import com.facebook.presto.sql.planner.LogicalPlanner;
 import com.facebook.presto.sql.planner.Plan;
@@ -31,19 +33,23 @@ import static com.google.common.base.Preconditions.checkNotNull;
 
 public class QueryExplainer
 {
-    public final Session session;
-    public final List<PlanOptimizer> planOptimizers;
-    public final Metadata metadata;
-    public final boolean experimentalSyntaxEnabled;
+    private final ConnectorSession session;
+    private final List<PlanOptimizer> planOptimizers;
+    private final Metadata metadata;
+    private final SqlParser sqlParser;
+    private final boolean experimentalSyntaxEnabled;
 
-    public QueryExplainer(Session session,
+    public QueryExplainer(
+            ConnectorSession session,
             List<PlanOptimizer> planOptimizers,
             Metadata metadata,
+            SqlParser sqlParser,
             boolean experimentalSyntaxEnabled)
     {
         this.session = checkNotNull(session, "session is null");
         this.planOptimizers = checkNotNull(planOptimizers, "planOptimizers is null");
         this.metadata = checkNotNull(metadata, "metadata is null");
+        this.sqlParser = checkNotNull(sqlParser, "sqlParser is null");
         this.experimentalSyntaxEnabled = experimentalSyntaxEnabled;
     }
 
@@ -52,10 +58,10 @@ public class QueryExplainer
         switch (planType) {
             case LOGICAL:
                 Plan plan = getLogicalPlan(statement);
-                return PlanPrinter.textLogicalPlan(plan.getRoot(), plan.getTypes());
+                return PlanPrinter.textLogicalPlan(plan.getRoot(), plan.getTypes(), metadata);
             case DISTRIBUTED:
                 SubPlan subPlan = getDistributedPlan(statement);
-                return PlanPrinter.textDistributedPlan(subPlan);
+                return PlanPrinter.textDistributedPlan(subPlan, metadata);
         }
         throw new IllegalArgumentException("Unhandled plan type: " + planType);
     }
@@ -82,7 +88,7 @@ public class QueryExplainer
     private Plan getLogicalPlan(Statement statement)
     {
         // analyze statement
-        Analyzer analyzer = new Analyzer(session, metadata, Optional.of(this), experimentalSyntaxEnabled);
+        Analyzer analyzer = new Analyzer(session, metadata, sqlParser, Optional.of(this), experimentalSyntaxEnabled);
 
         Analysis analysis = analyzer.analyze(statement);
         PlanNodeIdAllocator idAllocator = new PlanNodeIdAllocator();
@@ -95,7 +101,7 @@ public class QueryExplainer
     private SubPlan getDistributedPlan(Statement statement)
     {
         // analyze statement
-        Analyzer analyzer = new Analyzer(session, metadata, Optional.of(this), experimentalSyntaxEnabled);
+        Analyzer analyzer = new Analyzer(session, metadata, sqlParser, Optional.of(this), experimentalSyntaxEnabled);
 
         Analysis analysis = analyzer.analyze(statement);
         PlanNodeIdAllocator idAllocator = new PlanNodeIdAllocator();
@@ -104,6 +110,6 @@ public class QueryExplainer
         LogicalPlanner logicalPlanner = new LogicalPlanner(session, planOptimizers, idAllocator, metadata);
         Plan plan = logicalPlanner.plan(analysis);
 
-        return new DistributedLogicalPlanner(metadata, idAllocator).createSubPlans(plan, false);
+        return new DistributedLogicalPlanner(session, metadata, idAllocator).createSubPlans(plan, false);
     }
 }

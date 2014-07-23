@@ -19,20 +19,20 @@ import com.facebook.presto.sql.tree.AstVisitor;
 import com.facebook.presto.sql.tree.BetweenPredicate;
 import com.facebook.presto.sql.tree.BooleanLiteral;
 import com.facebook.presto.sql.tree.Cast;
+import com.facebook.presto.sql.tree.InputReference;
 import com.facebook.presto.sql.tree.CoalesceExpression;
 import com.facebook.presto.sql.tree.ComparisonExpression;
 import com.facebook.presto.sql.tree.CurrentTime;
-import com.facebook.presto.sql.tree.DateLiteral;
 import com.facebook.presto.sql.tree.DoubleLiteral;
 import com.facebook.presto.sql.tree.ExistsPredicate;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.Extract;
 import com.facebook.presto.sql.tree.FrameBound;
 import com.facebook.presto.sql.tree.FunctionCall;
+import com.facebook.presto.sql.tree.GenericLiteral;
 import com.facebook.presto.sql.tree.IfExpression;
 import com.facebook.presto.sql.tree.InListExpression;
 import com.facebook.presto.sql.tree.InPredicate;
-import com.facebook.presto.sql.tree.InputReference;
 import com.facebook.presto.sql.tree.IntervalLiteral;
 import com.facebook.presto.sql.tree.IsNotNullPredicate;
 import com.facebook.presto.sql.tree.IsNullPredicate;
@@ -44,9 +44,11 @@ import com.facebook.presto.sql.tree.Node;
 import com.facebook.presto.sql.tree.NotExpression;
 import com.facebook.presto.sql.tree.NullIfExpression;
 import com.facebook.presto.sql.tree.NullLiteral;
+import com.facebook.presto.sql.tree.QualifiedName;
 import com.facebook.presto.sql.tree.QualifiedNameReference;
 import com.facebook.presto.sql.tree.SearchedCaseExpression;
 import com.facebook.presto.sql.tree.SimpleCaseExpression;
+import com.facebook.presto.sql.tree.SortItem;
 import com.facebook.presto.sql.tree.StringLiteral;
 import com.facebook.presto.sql.tree.SubqueryExpression;
 import com.facebook.presto.sql.tree.TimeLiteral;
@@ -62,7 +64,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static com.facebook.presto.sql.SqlFormatter.formatSql;
-import static com.facebook.presto.sql.SqlFormatter.orderByFormatterFunction;
 import static com.google.common.collect.Iterables.transform;
 
 public final class ExpressionFormatter
@@ -81,7 +82,7 @@ public final class ExpressionFormatter
             @Override
             public String apply(Expression input)
             {
-                return ExpressionFormatter.formatExpression(input);
+                return formatExpression(input);
             }
         };
     }
@@ -105,19 +106,8 @@ public final class ExpressionFormatter
         protected String visitCurrentTime(CurrentTime node, Void context)
         {
             StringBuilder builder = new StringBuilder();
-            switch (node.getType()) {
-                case TIME:
-                    builder.append("current_time");
-                    break;
-                case DATE:
-                    builder.append("current_date");
-                    break;
-                case TIMESTAMP:
-                    builder.append("current_timestamp");
-                    break;
-                default:
-                    throw new UnsupportedOperationException("not yet implemented: " + node.getType());
-            }
+
+            builder.append(node.getType().getName());
 
             if (node.getPrecision() != null) {
                 builder.append('(')
@@ -143,7 +133,7 @@ public final class ExpressionFormatter
         @Override
         protected String visitStringLiteral(StringLiteral node, Void context)
         {
-            return "'" + node.getValue().replace("'", "''") + "'";
+            return formatStringLiteral(node.getValue());
         }
 
         @Override
@@ -156,6 +146,12 @@ public final class ExpressionFormatter
         protected String visitDoubleLiteral(DoubleLiteral node, Void context)
         {
             return Double.toString(node.getValue());
+        }
+
+        @Override
+        protected String visitGenericLiteral(GenericLiteral node, Void context)
+        {
+            return node.getType() + " '" + node.getValue() + "'";
         }
 
         @Override
@@ -177,16 +173,19 @@ public final class ExpressionFormatter
         }
 
         @Override
-        protected String visitDateLiteral(DateLiteral node, Void context)
-        {
-            return "DATE '" + node.getValue() + "'";
-        }
-
-        @Override
         protected String visitIntervalLiteral(IntervalLiteral node, Void context)
         {
             String sign = (node.getSign() == IntervalLiteral.Sign.NEGATIVE) ? "- " : "";
-            return "INTERVAL " + sign + "'" + node.getValue() + "' " + node.getType();
+            StringBuilder builder = new StringBuilder()
+                    .append("INTERVAL ")
+                    .append(sign)
+                    .append(" '").append(node.getValue()).append("' ")
+                    .append(node.getStartField());
+
+            if (node.getEndField() != null)  {
+                builder.append(" TO ").append(node.getEndField());
+            }
+            return builder.toString();
         }
 
         @Override
@@ -204,8 +203,13 @@ public final class ExpressionFormatter
         @Override
         protected String visitQualifiedNameReference(QualifiedNameReference node, Void context)
         {
+            return formatQualifiedName(node.getName());
+        }
+
+        private static String formatQualifiedName(QualifiedName name)
+        {
             List<String> parts = new ArrayList<>();
-            for (String part : node.getName().getParts()) {
+            for (String part : name.getParts()) {
                 parts.add(formatIdentifier(part));
             }
             return Joiner.on('.').join(parts);
@@ -215,7 +219,7 @@ public final class ExpressionFormatter
         public String visitInputReference(InputReference node, Void context)
         {
             // add colon so this won't parse
-            return ":input(" + node.getInput().getChannel() + ")";
+            return ":input(" + node.getChannel() + ")";
         }
 
         @Override
@@ -231,7 +235,7 @@ public final class ExpressionFormatter
                 arguments = "DISTINCT " + arguments;
             }
 
-            builder.append(node.getName())
+            builder.append(formatQualifiedName(node.getName()))
                     .append('(').append(arguments).append(')');
 
             if (node.getWindow().isPresent()) {
@@ -302,7 +306,9 @@ public final class ExpressionFormatter
         @Override
         protected String visitNegativeExpression(NegativeExpression node, Void context)
         {
-            return "-" + process(node.getValue(), null);
+            String value = process(node.getValue(), null);
+            String separator = value.startsWith("-") ? " " : "";
+            return "-" + separator + value;
         }
 
         @Override
@@ -344,7 +350,8 @@ public final class ExpressionFormatter
         @Override
         public String visitCast(Cast node, Void context)
         {
-            return "CAST(" + process(node.getExpression(), context) + " AS " + node.getType() + ")";
+            return (node.isSafe() ? "TRY_CAST" : "CAST") +
+                    "(" + process(node.getExpression(), context) + " AS " + node.getType() + ")";
         }
 
         @Override
@@ -419,7 +426,7 @@ public final class ExpressionFormatter
                 parts.add("PARTITION BY " + joinExpressions(node.getPartitionBy()));
             }
             if (!node.getOrderBy().isEmpty()) {
-                parts.add("ORDER BY " + Joiner.on(", ").join(transform(node.getOrderBy(), orderByFormatterFunction())));
+                parts.add("ORDER BY " + formatSortItems(node.getOrderBy()));
             }
             if (node.getFrame().isPresent()) {
                 parts.add(process(node.getFrame().get(), null));
@@ -488,5 +495,56 @@ public final class ExpressionFormatter
             // TODO: handle escaping properly
             return '"' + s + '"';
         }
+    }
+
+    static String formatStringLiteral(String s)
+    {
+        return "'" + s.replace("'", "''") + "'";
+    }
+
+    static String formatSortItems(List<SortItem> sortItems)
+    {
+        return Joiner.on(", ").join(transform(sortItems, sortItemFormatterFunction()));
+    }
+
+    private static Function<SortItem, String> sortItemFormatterFunction()
+    {
+        return new Function<SortItem, String>()
+        {
+            @Override
+            public String apply(SortItem input)
+            {
+                StringBuilder builder = new StringBuilder();
+
+                builder.append(formatExpression(input.getSortKey()));
+
+                switch (input.getOrdering()) {
+                    case ASCENDING:
+                        builder.append(" ASC");
+                        break;
+                    case DESCENDING:
+                        builder.append(" DESC");
+                        break;
+                    default:
+                        throw new UnsupportedOperationException("unknown ordering: " + input.getOrdering());
+                }
+
+                switch (input.getNullOrdering()) {
+                    case FIRST:
+                        builder.append(" NULLS FIRST");
+                        break;
+                    case LAST:
+                        builder.append(" NULLS LAST");
+                        break;
+                    case UNDEFINED:
+                        // no op
+                        break;
+                    default:
+                        throw new UnsupportedOperationException("unknown null ordering: " + input.getNullOrdering());
+                }
+
+                return builder.toString();
+            }
+        };
     }
 }

@@ -16,13 +16,16 @@ package com.facebook.presto.sql.gen;
 import com.facebook.presto.byteCode.ByteCodeNode;
 import com.facebook.presto.metadata.FunctionInfo;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.sql.analyzer.Type;
+import com.facebook.presto.metadata.OperatorType;
+import com.facebook.presto.metadata.Signature;
+import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.tree.QualifiedName;
-import com.google.common.base.Function;
-import com.google.common.collect.Lists;
-import io.airlift.slice.Slice;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableList;
 
 import java.lang.invoke.CallSite;
+import java.lang.invoke.ConstantCallSite;
+import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -38,68 +41,75 @@ public class BootstrapFunctionBinder
 
     private final Metadata metadata;
 
-    private final ConcurrentMap<Long, FunctionBinding> functionBindings = new ConcurrentHashMap<>();
+    private final ConcurrentMap<Long, CallSite> bindings = new ConcurrentHashMap<>();
 
     public BootstrapFunctionBinder(Metadata metadata)
     {
         this.metadata = checkNotNull(metadata, "metadata is null");
     }
 
-    public FunctionBinding bindFunction(QualifiedName name, ByteCodeNode getSessionByteCode, List<TypedByteCodeNode> arguments)
+    public FunctionBinding bindFunction(QualifiedName name, ByteCodeNode getSessionByteCode, List<ByteCodeNode> arguments, List<Type> argumentTypes)
     {
-        List<Type> argumentTypes = Lists.transform(arguments, toTupleType());
-        FunctionInfo function = metadata.getFunction(name, argumentTypes, false);
+        FunctionInfo function = metadata.resolveFunction(name, argumentTypes, false);
         checkArgument(function != null, "Unknown function %s%s", name, argumentTypes);
 
-        FunctionBinding functionBinding = bindFunction(name.toString(), getSessionByteCode, arguments, function.getFunctionBinder());
-
-        return functionBinding;
+        return bindFunction(name.toString(), getSessionByteCode, arguments, function.getFunctionBinder());
     }
 
-    public FunctionBinding bindFunction(String name, ByteCodeNode getSessionByteCode, List<TypedByteCodeNode> arguments, FunctionBinder defaultFunctionBinder)
+    public FunctionBinding bindFunction(String name, ByteCodeNode getSessionByteCode, List<ByteCodeNode> arguments, FunctionBinder defaultFunctionBinder)
     {
         // perform binding
         FunctionBinding functionBinding = defaultFunctionBinder.bindFunction(NEXT_BINDING_ID.getAndIncrement(), name, getSessionByteCode, arguments);
 
-        // record binding
-        functionBindings.put(functionBinding.getBindingId(), functionBinding);
+        // record binding for use by invokedynamic bootstrap call
+        bindings.put(functionBinding.getBindingId(), functionBinding.getCallSite());
 
         return functionBinding;
     }
 
-    public CallSite bootstrap(String name, MethodType type, long bindingId)
+    public FunctionBinding bindOperator(OperatorType operatorType, ByteCodeNode getSessionByteCode, List<ByteCodeNode> arguments, List<Type> argumentTypes)
     {
-        FunctionBinding functionBinding = functionBindings.get(bindingId);
-        checkArgument(functionBinding != null, "Binding %s for function %s%s not found", bindingId, name, type.parameterList());
-
-        return functionBinding.getCallSite();
+        FunctionInfo operatorInfo = metadata.resolveOperator(operatorType, argumentTypes);
+        return bindOperator(operatorInfo, getSessionByteCode, arguments);
     }
 
-    public static Function<TypedByteCodeNode, Type> toTupleType()
+    public FunctionBinding bindCastOperator(ByteCodeNode getSessionByteCode, ByteCodeNode sourceValue, Type sourceType, Type targetType)
     {
-        return new Function<TypedByteCodeNode, Type>()
-        {
-            @Override
-            public Type apply(TypedByteCodeNode node)
-            {
-                Class<?> type = node.getType();
-                if (type == boolean.class) {
-                    return Type.BOOLEAN;
-                }
-                if (type == long.class) {
-                    return Type.BIGINT;
-                }
-                if (type == double.class) {
-                    return Type.DOUBLE;
-                }
-                if (type == String.class) {
-                    return Type.VARCHAR;
-                }
-                if (type == Slice.class) {
-                    return Type.VARCHAR;
-                }
-                throw new UnsupportedOperationException("Unsupported function type " + type);
-            }
-        };
+        FunctionInfo operatorInfo = metadata.getExactOperator(OperatorType.CAST, targetType, ImmutableList.of(sourceType));
+        return bindOperator(operatorInfo, getSessionByteCode, ImmutableList.of(sourceValue));
+    }
+
+    private FunctionBinding bindOperator(FunctionInfo operatorInfo, ByteCodeNode getSessionByteCode, List<ByteCodeNode> arguments)
+    {
+        return bindFunction(operatorInfo.getSignature().getName(), getSessionByteCode, arguments, operatorInfo.getFunctionBinder());
+    }
+
+    public FunctionBinding bindFunction(Signature signature, ByteCodeNode getSessionByteCode, List<ByteCodeNode> arguments)
+    {
+        FunctionInfo function = metadata.getExactFunction(signature);
+        if (function == null) {
+            // TODO: temporary hack to deal with magic timestamp literal functions which don't have an "exact" form and need to be "resolved"
+            function = metadata.resolveFunction(QualifiedName.of(signature.getName()), signature.getArgumentTypes(), false);
+        }
+
+        Preconditions.checkArgument(function != null, "Function %s not found", signature);
+
+        return bindFunction(signature.getName(), getSessionByteCode, arguments, function.getFunctionBinder());
+    }
+
+    public FunctionBinding bindConstant(Object constant, Class<?> type)
+    {
+        long bindingId = NEXT_BINDING_ID.getAndIncrement();
+        ConstantCallSite callsite = new ConstantCallSite(MethodHandles.constant(type, constant));
+        bindings.put(bindingId, callsite);
+        return new FunctionBinding(bindingId, "constant_" + bindingId, callsite, ImmutableList.<ByteCodeNode>of(), true);
+    }
+
+    public CallSite bootstrap(String name, MethodType type, long bindingId)
+    {
+        CallSite callSite = bindings.get(bindingId);
+        checkArgument(callSite != null, "Binding %s for function %s%s not found", bindingId, name, type.parameterList());
+
+        return callSite;
     }
 }

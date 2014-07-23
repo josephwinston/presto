@@ -13,13 +13,16 @@
  */
 package com.facebook.presto.serde;
 
-import com.facebook.presto.block.dictionary.Dictionary.DictionaryBuilder;
-import com.facebook.presto.tuple.Tuple;
-import com.facebook.presto.tuple.TupleInfo;
-import com.google.common.base.Function;
-import com.google.common.collect.Iterables;
+import com.facebook.presto.block.dictionary.DictionaryBlockEncoding;
+import com.facebook.presto.operator.GroupByHash;
+import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.spi.block.BlockBuilderStatus;
+import com.facebook.presto.spi.block.BlockEncoding;
+import com.facebook.presto.spi.type.Type;
+import com.google.common.collect.ImmutableList;
 
-import static com.facebook.presto.tuple.Tuples.createTuple;
+import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
@@ -27,8 +30,8 @@ public class DictionaryEncoder
         implements Encoder
 {
     private final Encoder idWriter;
-    private TupleInfo tupleInfo;
-    private DictionaryBuilder dictionaryBuilder;
+    private Type type;
+    private GroupByHash dictionaryBuilder;
     private boolean finished;
 
     public DictionaryEncoder(Encoder idWriter)
@@ -37,26 +40,22 @@ public class DictionaryEncoder
     }
 
     @Override
-    public Encoder append(Iterable<Tuple> tuples)
+    public Encoder append(Block block)
     {
-        checkNotNull(tuples, "tuples is null");
+        checkNotNull(block, "block is null");
         checkState(!finished, "already finished");
 
-        Iterable<Tuple> idTuples = Iterables.transform(tuples, new Function<Tuple, Tuple>()
-        {
-            @Override
-            public Tuple apply(Tuple tuple)
-            {
-                if (tupleInfo == null) {
-                    tupleInfo = tuple.getTupleInfo();
-                    dictionaryBuilder = new DictionaryBuilder(tupleInfo);
-                }
+        if (type == null) {
+            type = block.getType();
+            dictionaryBuilder = new GroupByHash(ImmutableList.of(type), new int[] {0}, 1_000);
+        }
 
-                long id = dictionaryBuilder.getId(tuple);
-                return createTuple(id);
-            }
-        });
-        idWriter.append(idTuples);
+        BlockBuilder idBlockBuilder = BIGINT.createBlockBuilder(new BlockBuilderStatus());
+        for (int position = 0; position < block.getPositionCount(); position++) {
+            int key = dictionaryBuilder.putIfAbsent(position, block);
+            idBlockBuilder.appendLong(key);
+        }
+        idWriter.append(idBlockBuilder.build());
 
         return this;
     }
@@ -64,10 +63,14 @@ public class DictionaryEncoder
     @Override
     public BlockEncoding finish()
     {
-        checkState(tupleInfo != null, "nothing appended");
+        checkState(type != null, "nothing appended");
         checkState(!finished, "already finished");
         finished = true;
 
-        return new DictionaryBlockEncoding(dictionaryBuilder.build(), idWriter.finish());
+        BlockBuilder blockBuilder = type.createBlockBuilder(new BlockBuilderStatus());
+        for (int groupId = 0; groupId < dictionaryBuilder.getGroupCount(); groupId++) {
+            dictionaryBuilder.appendValuesTo(groupId, blockBuilder);
+        }
+        return new DictionaryBlockEncoding(blockBuilder.build(), idWriter.finish());
     }
 }

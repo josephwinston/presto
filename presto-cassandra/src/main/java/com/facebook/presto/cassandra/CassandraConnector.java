@@ -15,6 +15,7 @@ package com.facebook.presto.cassandra;
 
 import com.facebook.presto.spi.Connector;
 import com.facebook.presto.spi.ConnectorHandleResolver;
+import com.facebook.presto.spi.ConnectorIndexResolver;
 import com.facebook.presto.spi.ConnectorMetadata;
 import com.facebook.presto.spi.ConnectorOutputHandleResolver;
 import com.facebook.presto.spi.ConnectorRecordSetProvider;
@@ -32,18 +33,24 @@ public class CassandraConnector
     private final CassandraSplitManager splitManager;
     private final ConnectorRecordSetProvider recordSetProvider;
     private final CassandraHandleResolver handleResolver;
+    private final CassandraConnectorRecordSinkProvider recordSinkProvider;
+    private final CassandraConnectorOutputHandleResolver outputHandleResolver;
 
     @Inject
     public CassandraConnector(
             CassandraMetadata metadata,
             CassandraSplitManager splitManager,
             CassandraRecordSetProvider recordSetProvider,
-            CassandraHandleResolver handleResolver)
+            CassandraHandleResolver handleResolver,
+            CassandraConnectorRecordSinkProvider recordSinkProvider,
+            CassandraConnectorOutputHandleResolver outputHandleResolver)
     {
         this.metadata = checkNotNull(metadata, "metadata is null");
         this.splitManager = checkNotNull(splitManager, "splitManager is null");
         this.recordSetProvider = checkNotNull(recordSetProvider, "recordSetProvider is null");
         this.handleResolver = checkNotNull(handleResolver, "handleResolver is null");
+        this.recordSinkProvider = checkNotNull(recordSinkProvider, "recordSinkProvider is null");
+        this.outputHandleResolver = checkNotNull(outputHandleResolver, "outputHandleResolver is null");
     }
 
     public ConnectorMetadata getMetadata()
@@ -69,11 +76,17 @@ public class CassandraConnector
     @Override
     public ConnectorRecordSinkProvider getRecordSinkProvider()
     {
-        throw new UnsupportedOperationException();
+        return recordSinkProvider;
     }
 
     @Override
     public ConnectorOutputHandleResolver getOutputHandleResolver()
+    {
+        return outputHandleResolver;
+    }
+
+    @Override
+    public ConnectorIndexResolver getIndexResolver()
     {
         throw new UnsupportedOperationException();
     }

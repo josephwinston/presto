@@ -17,7 +17,13 @@ import com.datastax.driver.core.DataType;
 import com.datastax.driver.core.Row;
 import com.datastax.driver.core.utils.Bytes;
 import com.facebook.presto.cassandra.util.CassandraCqlUtils;
-import com.facebook.presto.spi.ColumnType;
+import com.facebook.presto.spi.type.BigintType;
+import com.facebook.presto.spi.type.BooleanType;
+import com.facebook.presto.spi.type.DoubleType;
+import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.type.VarcharType;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.net.InetAddresses;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -30,41 +36,42 @@ import java.util.Map;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.net.InetAddresses.toAddrString;
 
 public enum CassandraType
         implements FullCassandraType
 {
-    ASCII(ColumnType.STRING, String.class),
-    BIGINT(ColumnType.LONG, Long.class),
-    BLOB(ColumnType.STRING, ByteBuffer.class),
-    CUSTOM(ColumnType.STRING, ByteBuffer.class),
-    BOOLEAN(ColumnType.BOOLEAN, Boolean.class),
-    COUNTER(ColumnType.LONG, Long.class),
-    DECIMAL(ColumnType.DOUBLE, BigDecimal.class),
-    DOUBLE(ColumnType.DOUBLE, Double.class),
-    FLOAT(ColumnType.DOUBLE, Float.class),
-    INET(ColumnType.STRING, InetAddress.class),
-    INT(ColumnType.LONG, Integer.class),
-    TEXT(ColumnType.STRING, String.class),
-    TIMESTAMP(ColumnType.LONG, Date.class),
-    UUID(ColumnType.STRING, java.util.UUID.class),
-    TIMEUUID(ColumnType.STRING, java.util.UUID.class),
-    VARCHAR(ColumnType.STRING, String.class),
-    VARINT(ColumnType.STRING, BigInteger.class),
-    LIST(ColumnType.STRING, null),
-    MAP(ColumnType.STRING, null),
-    SET(ColumnType.STRING, null);
+    ASCII(VarcharType.VARCHAR, String.class),
+    BIGINT(BigintType.BIGINT, Long.class),
+    BLOB(VarcharType.VARCHAR, ByteBuffer.class),
+    CUSTOM(VarcharType.VARCHAR, ByteBuffer.class),
+    BOOLEAN(BooleanType.BOOLEAN, Boolean.class),
+    COUNTER(BigintType.BIGINT, Long.class),
+    DECIMAL(DoubleType.DOUBLE, BigDecimal.class),
+    DOUBLE(DoubleType.DOUBLE, Double.class),
+    FLOAT(DoubleType.DOUBLE, Float.class),
+    INET(VarcharType.VARCHAR, InetAddress.class),
+    INT(BigintType.BIGINT, Integer.class),
+    TEXT(VarcharType.VARCHAR, String.class),
+    TIMESTAMP(BigintType.BIGINT, Date.class),
+    UUID(VarcharType.VARCHAR, java.util.UUID.class),
+    TIMEUUID(VarcharType.VARCHAR, java.util.UUID.class),
+    VARCHAR(VarcharType.VARCHAR, String.class),
+    VARINT(VarcharType.VARCHAR, BigInteger.class),
+    LIST(VarcharType.VARCHAR, null),
+    MAP(VarcharType.VARCHAR, null),
+    SET(VarcharType.VARCHAR, null);
 
-    private final ColumnType nativeType;
+    private final Type nativeType;
     private final Class<?> javaType;
 
-    CassandraType(ColumnType nativeType, Class<?> javaType)
+    CassandraType(Type nativeType, Class<?> javaType)
     {
         this.nativeType = checkNotNull(nativeType, "nativeType is null");
         this.javaType = javaType;
     }
 
-    public ColumnType getNativeType()
+    public Type getNativeType()
     {
         return nativeType;
     }
@@ -189,7 +196,7 @@ public enum CassandraType
                 case TIMESTAMP:
                     return row.getDate(i).getTime();
                 case INET:
-                    return row.getInet(i).toString();
+                    return toAddrString(row.getInet(i));
                 case VARINT:
                     return row.getVarint(i).toString();
                 case BLOB:
@@ -221,8 +228,7 @@ public enum CassandraType
         return buildArrayValue(row.getList(i, elemType.javaType), elemType);
     }
 
-    private static String buildMapValue(Row row, int i, CassandraType keyType,
-            CassandraType valueType)
+    private static String buildMapValue(Row row, int i, CassandraType keyType, CassandraType valueType)
     {
         StringBuilder sb = new StringBuilder();
         sb.append("{");
@@ -238,7 +244,8 @@ public enum CassandraType
         return sb.toString();
     }
 
-    private static String buildArrayValue(Collection<?> collection, CassandraType elemType)
+    @VisibleForTesting
+    static String buildArrayValue(Collection<?> collection, CassandraType elemType)
     {
         StringBuilder sb = new StringBuilder();
         sb.append("[");
@@ -291,7 +298,7 @@ public enum CassandraType
                 case TIMESTAMP:
                     return Long.toString(row.getDate(i).getTime());
                 case INET:
-                    return row.getInet(i).toString();
+                    return CassandraCqlUtils.quoteStringLiteral(toAddrString(row.getInet(i)));
                 case VARINT:
                     return row.getVarint(i).toString();
                 case BLOB:
@@ -315,11 +322,11 @@ public enum CassandraType
             case TIMESTAMP:
             case INET:
             case VARINT:
-                return CassandraCqlUtils.quoteStringLiteral(object.toString());
+                return CassandraCqlUtils.quoteStringLiteralForJson(object.toString());
 
             case BLOB:
             case CUSTOM:
-                return CassandraCqlUtils.quoteStringLiteral(Bytes.toHexString((ByteBuffer) object));
+                return CassandraCqlUtils.quoteStringLiteralForJson(Bytes.toHexString((ByteBuffer) object));
 
             case INT:
             case BIGINT:
@@ -367,9 +374,10 @@ public enum CassandraType
             case BIGINT:
             case BOOLEAN:
             case DOUBLE:
-            case INET:
             case COUNTER:
                 return comparable;
+            case INET:
+                return InetAddresses.forString((String) comparable);
             case INT:
                 return ((Long) comparable).intValue();
             case FLOAT:
@@ -377,7 +385,9 @@ public enum CassandraType
                 return ((Double) comparable).floatValue();
             case DECIMAL:
                 // conversion can result in precision lost
-                return new BigDecimal((Double) comparable);
+                // Presto uses double for decimal, so to keep the floating point precision, convert it to string.
+                // Otherwise partition id doesn't match
+                return new BigDecimal(comparable.toString());
             case TIMESTAMP:
                 return new Date((Long) comparable);
             case UUID:
@@ -394,5 +404,22 @@ public enum CassandraType
             default:
                 throw new IllegalStateException("Back conversion not implemented for " + this);
         }
+    }
+
+    public static CassandraType toCassandraType(Type type)
+    {
+        if (type.equals(BooleanType.BOOLEAN)) {
+            return BOOLEAN;
+        }
+        else if (type.equals(BigintType.BIGINT)) {
+            return BIGINT;
+        }
+        else if (type.equals(DoubleType.DOUBLE)) {
+            return DOUBLE;
+        }
+        else if (type.equals(VarcharType.VARCHAR)) {
+            return TEXT;
+        }
+        throw new IllegalArgumentException("unsupported type: " + type);
     }
 }

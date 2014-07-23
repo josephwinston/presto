@@ -13,8 +13,11 @@
  */
 package com.facebook.presto.operator.window;
 
-import com.facebook.presto.block.BlockBuilder;
-import com.facebook.presto.tuple.TupleInfo;
+import com.facebook.presto.operator.PagesIndex;
+import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.spi.type.Type;
+
+import static com.facebook.presto.spi.type.BigintType.BIGINT;
 
 public class RowNumberFunction
         implements WindowFunction
@@ -22,13 +25,13 @@ public class RowNumberFunction
     private long rowNumber;
 
     @Override
-    public TupleInfo getTupleInfo()
+    public Type getType()
     {
-        return TupleInfo.SINGLE_LONG;
+        return BIGINT;
     }
 
     @Override
-    public void reset(int partitionRowCount)
+    public void reset(int partitionRowCount, PagesIndex pagesIndex)
     {
         rowNumber = 0;
     }
@@ -37,6 +40,6 @@ public class RowNumberFunction
     public void processRow(BlockBuilder output, boolean newPeerGroup, int peerGroupCount)
     {
         rowNumber++;
-        output.append(rowNumber);
+        output.appendLong(rowNumber);
     }
 }

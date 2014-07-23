@@ -13,12 +13,11 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.block.BlockCursor;
-import com.facebook.presto.spi.ColumnHandle;
+import com.facebook.presto.metadata.ColumnHandle;
 import com.facebook.presto.spi.RecordCursor;
+import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.split.DataStreamProvider;
 import com.facebook.presto.sql.planner.plan.PlanNodeId;
-import com.facebook.presto.tuple.TupleInfo;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -38,7 +37,7 @@ public class ScanFilterAndProjectOperator
         private final List<ColumnHandle> columns;
         private final FilterFunction filterFunction;
         private final List<ProjectionFunction> projections;
-        private final List<TupleInfo> tupleInfos;
+        private final List<Type> types;
         private boolean closed;
 
         public ScanFilterAndProjectOperatorFactory(
@@ -55,7 +54,7 @@ public class ScanFilterAndProjectOperator
             this.columns = ImmutableList.copyOf(checkNotNull(columns, "columns is null"));
             this.filterFunction = checkNotNull(filterFunction, "filterFunction is null");
             this.projections = ImmutableList.copyOf(checkNotNull(projections, "projections is null"));
-            this.tupleInfos = toTupleInfos(this.projections);
+            this.types = toTypes(this.projections);
         }
 
         @Override
@@ -65,9 +64,9 @@ public class ScanFilterAndProjectOperator
         }
 
         @Override
-        public List<TupleInfo> getTupleInfos()
+        public List<Type> getTypes()
         {
-            return tupleInfos;
+            return types;
         }
 
         @Override
@@ -100,36 +99,24 @@ public class ScanFilterAndProjectOperator
                 sourceId,
                 dataStreamProvider,
                 columns,
-                toTupleInfos(ImmutableList.copyOf(checkNotNull(projections, "projections is null"))));
+                toTypes(ImmutableList.copyOf(checkNotNull(projections, "projections is null"))));
         this.filterFunction = checkNotNull(filterFunction, "filterFunction is null");
         this.projections = ImmutableList.copyOf(checkNotNull(projections, "projections is null"));
     }
 
+    @Override
     protected void filterAndProjectRowOriented(Page page, PageBuilder pageBuilder)
     {
         int rows = page.getPositionCount();
 
-        BlockCursor[] cursors = new BlockCursor[page.getChannelCount()];
-        for (int i = 0; i < page.getChannelCount(); i++) {
-            cursors[i] = page.getBlock(i).cursor();
-        }
-
         for (int position = 0; position < rows; position++) {
-            for (BlockCursor cursor : cursors) {
-                checkState(cursor.advanceNextPosition());
-            }
-
-            if (filterFunction.filter(cursors)) {
+            if (filterFunction.filter(position, page.getBlocks())) {
                 pageBuilder.declarePosition();
                 for (int i = 0; i < projections.size(); i++) {
                     // todo: if the projection function increases the size of the data significantly, this could cause the servers to OOM
-                    projections.get(i).project(cursors, pageBuilder.getBlockBuilder(i));
+                    projections.get(i).project(position, page.getBlocks(), pageBuilder.getBlockBuilder(i));
                 }
             }
-        }
-
-        for (BlockCursor cursor : cursors) {
-            checkState(!cursor.advanceNextPosition());
         }
     }
 
@@ -157,12 +144,12 @@ public class ScanFilterAndProjectOperator
         return completedPositions;
     }
 
-    private static List<TupleInfo> toTupleInfos(List<ProjectionFunction> projections)
+    private static List<Type> toTypes(List<ProjectionFunction> projections)
     {
-        ImmutableList.Builder<TupleInfo> tupleInfos = ImmutableList.builder();
+        ImmutableList.Builder<Type> types = ImmutableList.builder();
         for (ProjectionFunction projection : projections) {
-            tupleInfos.add(projection.getTupleInfo());
+            types.add(projection.getType());
         }
-        return tupleInfos.build();
+        return types.build();
     }
 }

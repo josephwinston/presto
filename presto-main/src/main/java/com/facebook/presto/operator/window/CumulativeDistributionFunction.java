@@ -13,8 +13,11 @@
  */
 package com.facebook.presto.operator.window;
 
-import com.facebook.presto.block.BlockBuilder;
-import com.facebook.presto.tuple.TupleInfo;
+import com.facebook.presto.operator.PagesIndex;
+import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.spi.type.Type;
+
+import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
 
 public class CumulativeDistributionFunction
         implements WindowFunction
@@ -23,13 +26,13 @@ public class CumulativeDistributionFunction
     private long count;
 
     @Override
-    public TupleInfo getTupleInfo()
+    public Type getType()
     {
-        return TupleInfo.SINGLE_DOUBLE;
+        return DOUBLE;
     }
 
     @Override
-    public void reset(int partitionRowCount)
+    public void reset(int partitionRowCount, PagesIndex pagesIndex)
     {
         totalCount = partitionRowCount;
         count = 0;
@@ -41,6 +44,6 @@ public class CumulativeDistributionFunction
         if (newPeerGroup) {
             count += peerGroupCount;
         }
-        output.append(((double) count) / totalCount);
+        output.appendDouble(((double) count) / totalCount);
     }
 }

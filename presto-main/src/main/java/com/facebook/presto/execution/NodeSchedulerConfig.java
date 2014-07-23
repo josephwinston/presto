@@ -20,6 +20,8 @@ import javax.validation.constraints.Min;
 public class NodeSchedulerConfig
 {
     private int minCandidates = 10;
+    private boolean locationAwareScheduling = true;
+    private boolean includeCoordinator = true;
 
     @Min(1)
     public int getMinCandidates()
@@ -31,6 +33,30 @@ public class NodeSchedulerConfig
     public NodeSchedulerConfig setMinCandidates(int candidates)
     {
         this.minCandidates = candidates;
+        return this;
+    }
+
+    public boolean isLocationAwareSchedulingEnabled()
+    {
+        return locationAwareScheduling;
+    }
+
+    @Config("node-scheduler.location-aware-scheduling-enabled")
+    public NodeSchedulerConfig setLocationAwareSchedulingEnabled(boolean locationAwareScheduling)
+    {
+        this.locationAwareScheduling = locationAwareScheduling;
+        return this;
+    }
+
+    public boolean isIncludeCoordinator()
+    {
+        return includeCoordinator;
+    }
+
+    @Config("node-scheduler.include-coordinator")
+    public NodeSchedulerConfig setIncludeCoordinator(boolean includeCoordinator)
+    {
+        this.includeCoordinator = includeCoordinator;
         return this;
     }
 }

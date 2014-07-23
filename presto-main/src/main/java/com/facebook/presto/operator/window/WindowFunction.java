@@ -13,19 +13,21 @@
  */
 package com.facebook.presto.operator.window;
 
-import com.facebook.presto.block.BlockBuilder;
-import com.facebook.presto.tuple.TupleInfo;
+import com.facebook.presto.operator.PagesIndex;
+import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.spi.type.Type;
 
 public interface WindowFunction
 {
-    TupleInfo getTupleInfo();
+    Type getType();
 
     /**
      * Reset state for a new partition (including the first one).
      *
      * @param partitionRowCount the total number of rows in the new partition
+     * @param pageIndex the pages index which contains sorted values
      */
-    void reset(int partitionRowCount);
+    void reset(int partitionRowCount, PagesIndex pageIndex);
 
     /**
      * Process a row by outputting the result of the window function.

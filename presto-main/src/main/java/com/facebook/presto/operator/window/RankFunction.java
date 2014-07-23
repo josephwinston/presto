@@ -13,8 +13,11 @@
  */
 package com.facebook.presto.operator.window;
 
-import com.facebook.presto.block.BlockBuilder;
-import com.facebook.presto.tuple.TupleInfo;
+import com.facebook.presto.operator.PagesIndex;
+import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.spi.type.Type;
+
+import static com.facebook.presto.spi.type.BigintType.BIGINT;
 
 public class RankFunction
         implements WindowFunction
@@ -23,13 +26,13 @@ public class RankFunction
     private long count;
 
     @Override
-    public TupleInfo getTupleInfo()
+    public Type getType()
     {
-        return TupleInfo.SINGLE_LONG;
+        return BIGINT;
     }
 
     @Override
-    public void reset(int partitionRowCount)
+    public void reset(int partitionRowCount, PagesIndex pagesIndex)
     {
         rank = 0;
         count = 1;
@@ -45,6 +48,6 @@ public class RankFunction
         else {
             count++;
         }
-        output.append(rank);
+        output.appendLong(rank);
     }
 }

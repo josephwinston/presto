@@ -13,20 +13,27 @@
  */
 package com.facebook.presto.hive;
 
-import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
-import com.facebook.presto.spi.ColumnType;
+import com.facebook.presto.spi.ConnectorColumnHandle;
+import com.facebook.presto.spi.type.Type;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Function;
 import com.google.common.base.Objects;
 import com.google.common.base.Predicate;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Iterables;
+import org.apache.hadoop.hive.metastore.api.FieldSchema;
+import org.apache.hadoop.hive.metastore.api.Table;
 
+import java.util.Map;
+
+import static com.facebook.presto.hive.util.Types.checkType;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 
 public class HiveColumnHandle
-        implements ColumnHandle
+        implements ConnectorColumnHandle
 {
     public static final String SAMPLE_WEIGHT_COLUMN_NAME = "__presto__sample_weight__";
 
@@ -97,7 +104,7 @@ public class HiveColumnHandle
         return new ColumnMetadata(name, hiveType.getNativeType(), ordinalPosition, partitionKey);
     }
 
-    public ColumnType getType()
+    public Type getType()
     {
         return hiveType.getNativeType();
     }
@@ -138,16 +145,14 @@ public class HiveColumnHandle
                 .toString();
     }
 
-    public static Function<ColumnHandle, HiveColumnHandle> hiveColumnHandle()
+    public static Function<ConnectorColumnHandle, HiveColumnHandle> hiveColumnHandle()
     {
-        return new Function<ColumnHandle, HiveColumnHandle>()
+        return new Function<ConnectorColumnHandle, HiveColumnHandle>()
         {
             @Override
-            public HiveColumnHandle apply(ColumnHandle columnHandle)
+            public HiveColumnHandle apply(ConnectorColumnHandle columnHandle)
             {
-                checkNotNull(columnHandle, "columnHandle is null");
-                checkArgument(columnHandle instanceof HiveColumnHandle, "columnHandle is not an instance of HiveColumnHandle");
-                return (HiveColumnHandle) columnHandle;
+                return checkType(columnHandle, HiveColumnHandle.class, "columnHandle");
             }
         };
     }
@@ -164,24 +169,38 @@ public class HiveColumnHandle
         };
     }
 
-    public static Function<HiveColumnHandle, ColumnMetadata> columnMetadataGetter()
+    public static Function<HiveColumnHandle, ColumnMetadata> columnMetadataGetter(Table table)
     {
+        ImmutableMap.Builder<String, String> builder = ImmutableMap.builder();
+        for (FieldSchema field : Iterables.concat(table.getSd().getCols(), table.getPartitionKeys())) {
+            if (field.getComment() != null) {
+                builder.put(field.getName(), field.getComment());
+            }
+        }
+        final Map<String, String> columnComment = builder.build();
+
         return new Function<HiveColumnHandle, ColumnMetadata>()
         {
             @Override
             public ColumnMetadata apply(HiveColumnHandle input)
             {
-                return input.getColumnMetadata();
+                return new ColumnMetadata(
+                        input.getName(),
+                        input.getType(),
+                        input.getOrdinalPosition(),
+                        input.isPartitionKey(),
+                        columnComment.get(input.getName()),
+                        false);
             }
         };
     }
 
-    public static Function<HiveColumnHandle, ColumnType> nativeTypeGetter()
+    public static Function<HiveColumnHandle, Type> nativeTypeGetter()
     {
-        return new Function<HiveColumnHandle, ColumnType>()
+        return new Function<HiveColumnHandle, Type>()
         {
             @Override
-            public ColumnType apply(HiveColumnHandle input)
+            public Type apply(HiveColumnHandle input)
             {
                 return input.getType();
             }

@@ -16,17 +16,15 @@ package com.facebook.presto.operator.aggregation;
 import com.facebook.presto.operator.aggregation.ApproximatePercentileAggregation.ApproximatePercentileAccumulator;
 import com.facebook.presto.operator.aggregation.ApproximatePercentileAggregation.ApproximatePercentileGroupedAccumulator;
 import com.facebook.presto.operator.aggregation.ApproximatePercentileAggregation.DigestAndPercentile;
-import com.facebook.presto.operator.aggregation.SimpleAggregationFunction.SimpleAccumulator;
-import com.facebook.presto.operator.aggregation.SimpleAggregationFunction.SimpleGroupedAccumulator;
-import com.facebook.presto.tuple.TupleInfo.Type;
+import com.facebook.presto.spi.type.Type;
 import com.google.common.base.Throwables;
 
-import static com.facebook.presto.tuple.TupleInfo.Type.DOUBLE;
-import static com.facebook.presto.tuple.TupleInfo.Type.FIXED_INT_64;
+import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
 
 public final class ApproximatePercentileAggregations
 {
-    public static final AggregationFunction LONG_APPROXIMATE_PERCENTILE_AGGREGATION = createIsolatedAggregation(FIXED_INT_64);
+    public static final AggregationFunction LONG_APPROXIMATE_PERCENTILE_AGGREGATION = createIsolatedAggregation(BIGINT);
     public static final AggregationFunction DOUBLE_APPROXIMATE_PERCENTILE_AGGREGATION = createIsolatedAggregation(DOUBLE);
 
     private ApproximatePercentileAggregations() {}
@@ -37,13 +35,10 @@ public final class ApproximatePercentileAggregations
                 AggregationFunction.class,
 
                 ApproximatePercentileAggregation.class,
-                SimpleAggregationFunction.class,
 
                 ApproximatePercentileGroupedAccumulator.class,
-                SimpleGroupedAccumulator.class,
 
                 ApproximatePercentileAccumulator.class,
-                SimpleAccumulator.class,
 
                 DigestAndPercentile.class);
 

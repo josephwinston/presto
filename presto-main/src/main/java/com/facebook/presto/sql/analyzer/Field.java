@@ -14,6 +14,7 @@
 package com.facebook.presto.sql.analyzer;
 
 import com.facebook.presto.sql.tree.QualifiedName;
+import com.facebook.presto.spi.type.Type;
 import com.google.common.base.Function;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
@@ -26,13 +27,14 @@ public class Field
     private final Optional<QualifiedName> relationAlias;
     private final Optional<String> name;
     private final Type type;
+    private final boolean hidden;
 
     public static Field newUnqualified(String name, Type type)
     {
         Preconditions.checkNotNull(name, "name is null");
         Preconditions.checkNotNull(type, "type is null");
 
-        return new Field(Optional.<QualifiedName>absent(), Optional.of(name), type);
+        return new Field(Optional.<QualifiedName>absent(), Optional.of(name), type, false);
     }
 
     public static Field newUnqualified(Optional<String> name, Type type)
@@ -40,19 +42,19 @@ public class Field
         Preconditions.checkNotNull(name, "name is null");
         Preconditions.checkNotNull(type, "type is null");
 
-        return new Field(Optional.<QualifiedName>absent(), name, type);
+        return new Field(Optional.<QualifiedName>absent(), name, type, false);
     }
 
-    public static Field newQualified(QualifiedName relationAlias, Optional<String> name, Type type)
+    public static Field newQualified(QualifiedName relationAlias, Optional<String> name, Type type, boolean hidden)
     {
         Preconditions.checkNotNull(relationAlias, "relationAlias is null");
         Preconditions.checkNotNull(name, "name is null");
         Preconditions.checkNotNull(type, "type is null");
 
-        return new Field(Optional.of(relationAlias), name, type);
+        return new Field(Optional.of(relationAlias), name, type, hidden);
     }
 
-    private Field(Optional<QualifiedName> relationAlias, Optional<String> name, Type type)
+    private Field(Optional<QualifiedName> relationAlias, Optional<String> name, Type type, boolean hidden)
     {
         checkNotNull(relationAlias, "relationAlias is null");
         checkNotNull(name, "name is null");
@@ -61,6 +63,7 @@ public class Field
         this.relationAlias = relationAlias;
         this.name = name;
         this.type = type;
+        this.hidden = hidden;
     }
 
     public Optional<QualifiedName> getRelationAlias()
@@ -76,6 +79,11 @@ public class Field
     public Type getType()
     {
         return type;
+    }
+
+    public boolean isHidden()
+    {
+        return hidden;
     }
 
     public static Function<Field, Type> typeGetter()
@@ -134,6 +142,30 @@ public class Field
             public Optional<QualifiedName> apply(Field input)
             {
                 return input.getRelationAlias();
+            }
+        };
+    }
+
+    public static Predicate<Field> isVisiblePredicate()
+    {
+        return new Predicate<Field>()
+        {
+            @Override
+            public boolean apply(Field field)
+            {
+                return !field.isHidden();
+            }
+        };
+    }
+
+    public static Predicate<Field> matchesPrefixPredicate(final Optional<QualifiedName> prefix)
+    {
+        return new Predicate<Field>()
+        {
+            @Override
+            public boolean apply(Field input)
+            {
+                return input.matchesPrefix(prefix);
             }
         };
     }

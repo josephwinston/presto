@@ -13,16 +13,14 @@
  */
 package com.facebook.presto;
 
-import com.facebook.presto.block.Block;
-import com.facebook.presto.block.BlockCursor;
 import com.facebook.presto.operator.Page;
 import com.facebook.presto.operator.PageBuilder;
-import com.facebook.presto.tuple.TupleInfo;
+import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.spi.type.Type;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Objects;
 import com.google.common.collect.ImmutableList;
-import io.airlift.slice.Slice;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -72,34 +70,18 @@ public final class HashPagePartitionFunction
             return pages;
         }
 
-        List<TupleInfo> tupleInfos = getTupleInfos(pages);
-
-        PageBuilder pageBuilder = new PageBuilder(tupleInfos);
+        PageBuilder pageBuilder = new PageBuilder(getTypes(pages));
 
         ImmutableList.Builder<Page> partitionedPages = ImmutableList.builder();
         for (Page page : pages) {
-            // open the page
-            BlockCursor[] cursors = new BlockCursor[tupleInfos.size()];
-            for (int i = 0; i < cursors.length; i++) {
-                cursors[i] = page.getBlock(i).cursor();
-            }
-            // for each position
             for (int position = 0; position < page.getPositionCount(); position++) {
-                // advance all cursors
-                for (BlockCursor cursor : cursors) {
-                    cursor.advanceNextPosition();
-                }
-
                 // if hash is not in range skip
-                int partitionHashBucket = getPartitionHashBucket(tupleInfos, cursors);
+                int partitionHashBucket = getPartitionHashBucket(position, page);
                 if (partitionHashBucket != partition) {
                     continue;
                 }
 
-                // append row
-                for (int channel = 0; channel < cursors.length; channel++) {
-                    pageBuilder.getBlockBuilder(channel).append(cursors[channel]);
-                }
+                page.appendTo(position, pageBuilder);
 
                 // if page is full, flush
                 if (pageBuilder.isFull()) {
@@ -115,12 +97,12 @@ public final class HashPagePartitionFunction
         return partitionedPages.build();
     }
 
-    private int getPartitionHashBucket(List<TupleInfo> tupleInfos, BlockCursor[] cursors)
+    private int getPartitionHashBucket(int position, Page page)
     {
         long hashCode = 1;
         for (int channel : partitioningChannels) {
             hashCode *= 31;
-            hashCode += calculateHashCode(tupleInfos.get(channel), cursors[channel]);
+            hashCode += page.getBlock(channel).hash(position);
         }
         // clear the sign bit
         hashCode &= 0x7fff_ffff_ffff_ffffL;
@@ -128,14 +110,6 @@ public final class HashPagePartitionFunction
         int bucket = (int) (hashCode % partitionCount);
         checkState(bucket >= 0 && bucket < partitionCount);
         return bucket;
-    }
-
-    private static int calculateHashCode(TupleInfo tupleInfo, BlockCursor cursor)
-    {
-        Slice slice = cursor.getRawSlice();
-        int offset = cursor.getRawOffset();
-        int length = tupleInfo.size(slice, offset);
-        return slice.hashCode(offset, length);
     }
 
     @Override
@@ -169,13 +143,13 @@ public final class HashPagePartitionFunction
                 .toString();
     }
 
-    private static List<TupleInfo> getTupleInfos(List<Page> pages)
+    private static List<Type> getTypes(List<Page> pages)
     {
         Page firstPage = pages.get(0);
-        List<TupleInfo> tupleInfos = new ArrayList<>();
+        List<Type> types = new ArrayList<>();
         for (Block block : firstPage.getBlocks()) {
-            tupleInfos.add(block.getTupleInfo());
+            types.add(block.getType());
         }
-        return tupleInfos;
+        return types;
     }
 }

@@ -14,21 +14,20 @@
 package com.facebook.presto.hive;
 
 import com.google.common.base.Optional;
-import com.google.common.base.Throwables;
-import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.serde2.columnar.BytesRefArrayWritable;
 import org.apache.hadoop.hive.serde2.columnar.LazyBinaryColumnarSerDe;
 import org.apache.hadoop.mapred.RecordReader;
+import org.joda.time.DateTimeZone;
 
 import java.util.List;
 
-import static org.apache.hadoop.hive.metastore.MetaStoreUtils.getDeserializer;
+import static com.facebook.presto.hive.HiveUtil.getDeserializer;
 
 public class ColumnarBinaryHiveRecordCursorProvider
         implements HiveRecordCursorProvider
 {
     @Override
-    public Optional<HiveRecordCursor> createHiveRecordCursor(HiveSplit split, RecordReader<?, ?> recordReader, List<HiveColumnHandle> columns)
+    public Optional<HiveRecordCursor> createHiveRecordCursor(HiveSplit split, RecordReader<?, ?> recordReader, List<HiveColumnHandle> columns, DateTimeZone hiveStorageTimeZone)
     {
         if (usesColumnarBinarySerDe(split)) {
             return Optional.<HiveRecordCursor>of(new ColumnarBinaryHiveRecordCursor<>(
@@ -36,19 +35,15 @@ public class ColumnarBinaryHiveRecordCursorProvider
                     split.getLength(),
                     split.getSchema(),
                     split.getPartitionKeys(),
-                    columns));
+                    columns,
+                    DateTimeZone.forID(split.getSession().getTimeZoneKey().getId())));
         }
         return Optional.absent();
     }
 
     private static boolean usesColumnarBinarySerDe(HiveSplit split)
     {
-        try {
-            return getDeserializer(null, split.getSchema()) instanceof LazyBinaryColumnarSerDe;
-        }
-        catch (MetaException e) {
-            throw Throwables.propagate(e);
-        }
+        return getDeserializer(split.getSchema()) instanceof LazyBinaryColumnarSerDe;
     }
 
     @SuppressWarnings("unchecked")

@@ -14,7 +14,6 @@
 package com.facebook.presto.sql.parser;
 
 import com.facebook.presto.sql.SqlFormatter;
-import com.facebook.presto.sql.tree.Query;
 import com.facebook.presto.sql.tree.Statement;
 import com.google.common.base.Charsets;
 import com.google.common.io.Resources;
@@ -23,7 +22,7 @@ import org.testng.annotations.Test;
 
 import java.io.IOException;
 
-import static com.facebook.presto.sql.parser.TreeAssertions.assertFormattedSql;
+import static com.facebook.presto.sql.testing.TreeAssertions.assertFormattedSql;
 import static com.facebook.presto.sql.parser.TreePrinter.treeToString;
 import static com.google.common.base.Strings.repeat;
 import static java.lang.String.format;
@@ -31,12 +30,20 @@ import static org.testng.Assert.assertFalse;
 
 public class TestStatementBuilder
 {
+    private static final SqlParser SQL_PARSER = new SqlParser();
+
     @Test
     public void testStatementBuilder()
             throws Exception
     {
         printStatement("select * from foo");
         printStatement("explain select * from foo");
+        printStatement("explain (type distributed, format graphviz) select * from foo");
+
+        printStatement("select * from foo /* end */");
+        printStatement("/* start */ select * from foo");
+        printStatement("/* start */ select * /* middle */ from foo /* end */");
+        printStatement("-- start\nselect * -- junk\n-- hi\nfrom foo -- done");
 
         printStatement("select * from foo a (x, y, z)");
 
@@ -69,6 +76,11 @@ public class TestStatementBuilder
 
         printStatement("select * from information_schema.tables");
 
+        printStatement("show catalogs");
+
+        printStatement("show schemas");
+        printStatement("show schemas from sys");
+
         printStatement("show tables");
         printStatement("show tables from information_schema");
         printStatement("show tables like '%'");
@@ -80,7 +92,12 @@ public class TestStatementBuilder
         printStatement("show partitions from foo limit 10");
         printStatement("show partitions from foo order by x desc limit 10");
 
-        printStatement("select * from a.b.c@d");
+        printStatement("show functions");
+
+        printStatement("select cast('123' as bigint), try_cast('foo' as bigint)");
+
+        printStatement("select * from a.b.c");
+        printStatement("select * from a.b.c.e.f.g");
 
         printStatement("select \"TOTALPRICE\" \"my price\" from \"ORDERS\"");
 
@@ -92,9 +109,36 @@ public class TestStatementBuilder
 
         printStatement("select * from foo tablesample poissonized (100)");
 
+        printStatement("select * from foo approximate at 90 confidence");
+
         printStatement("create table foo as select * from abc");
+        printStatement("drop table foo");
 
         printStatement("values ('a', 1, 2.2), ('b', 2, 3.3)");
+
+        printStatement("table foo");
+        printStatement("table foo order by x limit 10");
+        printStatement("(table foo)");
+        printStatement("(table foo) limit 10");
+        printStatement("(table foo limit 5) limit 10");
+
+        printStatement("select * from a union select * from b");
+        printStatement("table a union all table b");
+        printStatement("(table foo) union select * from foo union (table foo order by x)");
+
+        printStatement("table a union table b intersect table c");
+        printStatement("(table a union table b) intersect table c");
+        printStatement("table a union table b except table c intersect table d");
+        printStatement("(table a union table b except table c) intersect table d");
+        printStatement("((table a union table b) except table c) intersect table d");
+        printStatement("(table a union (table b except table c)) intersect table d");
+        printStatement("table a intersect table b union table c");
+        printStatement("table a intersect (table b union table c)");
+
+        printStatement("create view foo as with a as (select 123) select * from a");
+        printStatement("create or replace view foo as select 123 from t");
+
+        printStatement("drop view foo");
     }
 
     @Test
@@ -137,20 +181,17 @@ public class TestStatementBuilder
         println(sql.trim());
         println("");
 
-        CommonTree tree = SqlParser.parseStatement(sql);
+        CommonTree tree = SQL_PARSER.parseStatement(sql);
         println(treeToString(tree));
         println("");
 
-        Statement statement = SqlParser.createStatement(tree);
+        Statement statement = SQL_PARSER.createStatement(tree);
         println(statement.toString());
         println("");
 
-        // TODO: support formatting all statement types
-        if (statement instanceof Query) {
-            println(SqlFormatter.formatSql(statement));
-            println("");
-            assertFormattedSql(statement);
-        }
+        println(SqlFormatter.formatSql(statement));
+        println("");
+        assertFormattedSql(SQL_PARSER, statement);
 
         println(repeat("=", 60));
         println("");

@@ -13,11 +13,11 @@
  */
 package com.facebook.presto.serde;
 
-import com.facebook.presto.block.Block;
-import com.facebook.presto.tuple.Tuple;
+import com.facebook.presto.operator.ChannelSet.ChannelSetBuilder;
+import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.spi.block.BlockEncoding;
+import com.facebook.presto.spi.block.BlockEncodingSerde;
 import com.google.common.base.Throwables;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Iterables;
 import com.google.common.io.OutputSupplier;
 import io.airlift.slice.OutputStreamSliceOutput;
 import io.airlift.slice.SliceOutput;
@@ -25,37 +25,14 @@ import io.airlift.slice.SliceOutput;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.Set;
 
-import static com.facebook.presto.block.BlockUtils.toTupleIterable;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
 public class BlocksFileWriter
         implements Closeable
 {
-    public static void writeBlocks(BlocksFileEncoding encoding, OutputSupplier<? extends OutputStream> sliceOutput, Block... blocks)
-    {
-        writeBlocks(encoding, sliceOutput, ImmutableList.copyOf(blocks));
-    }
-
-    public static void writeBlocks(BlocksFileEncoding encoding, OutputSupplier<? extends OutputStream> sliceOutput, Iterable<? extends Block> blocks)
-    {
-        writeBlocks(encoding, sliceOutput, blocks.iterator());
-    }
-
-    public static void writeBlocks(BlocksFileEncoding encoding, OutputSupplier<? extends OutputStream> sliceOutput, Iterator<? extends Block> blocks)
-    {
-        checkNotNull(sliceOutput, "sliceOutput is null");
-        BlocksFileWriter fileWriter = new BlocksFileWriter(encoding, sliceOutput);
-        while (blocks.hasNext()) {
-            fileWriter.append(toTupleIterable(blocks.next()));
-        }
-        fileWriter.close();
-    }
-
+    private final BlockEncodingSerde blockEncodingSerde;
     private final BlocksFileEncoding encoding;
     private final OutputSupplier<? extends OutputStream> outputSupplier;
     private final StatsBuilder statsBuilder = new StatsBuilder();
@@ -63,25 +40,21 @@ public class BlocksFileWriter
     private SliceOutput sliceOutput;
     private boolean closed;
 
-    public BlocksFileWriter(BlocksFileEncoding encoding, OutputSupplier<? extends OutputStream> outputSupplier)
+    public BlocksFileWriter(BlockEncodingSerde blockEncodingSerde, BlocksFileEncoding encoding, OutputSupplier<? extends OutputStream> outputSupplier)
     {
-        checkNotNull(encoding, "encoding is null");
-        checkNotNull(outputSupplier, "outputSupplier is null");
-
-        this.encoding = encoding;
-        this.outputSupplier = outputSupplier;
+        this.blockEncodingSerde = checkNotNull(blockEncodingSerde, "blockEncodingManager is null");
+        this.encoding = checkNotNull(encoding, "encoding is null");
+        this.outputSupplier = checkNotNull(outputSupplier, "outputSupplier is null");
     }
 
-    public BlocksFileWriter append(Iterable<Tuple> tuples)
+    public BlocksFileWriter append(Block block)
     {
-        checkNotNull(tuples, "tuples is null");
-        if (!Iterables.isEmpty(tuples)) {
-            if (encoder == null) {
-                open();
-            }
-            statsBuilder.process(tuples);
-            encoder.append(tuples);
+        checkNotNull(block, "block is null");
+        if (encoder == null) {
+            open();
         }
+        statsBuilder.process(block);
+        encoder.append(block);
         return this;
     }
 
@@ -123,7 +96,7 @@ public class BlocksFileWriter
         int startingIndex = sliceOutput.size();
 
         // write file encoding
-        BlockEncodings.writeBlockEncoding(sliceOutput, blockEncoding);
+        blockEncodingSerde.writeBlockEncoding(sliceOutput, blockEncoding);
 
         // write stats
         BlocksFileStats.serialize(statsBuilder.build(), sliceOutput);
@@ -157,27 +130,33 @@ public class BlocksFileWriter
 
         private long rowCount;
         private long runsCount;
-        private Tuple lastTuple;
-        private final Set<Tuple> set = new HashSet<>(MAX_UNIQUE_COUNT);
+        private Block lastValue;
+        private ChannelSetBuilder dictionaryBuilder;
 
-        public void process(Iterable<Tuple> tuples)
+        public void process(Block block)
         {
-            checkNotNull(tuples, "tuples is null");
+            checkNotNull(block, "block is null");
 
-            for (Tuple tuple : tuples) {
-                if (lastTuple == null) {
-                    lastTuple = tuple;
-                    if (set.size() < MAX_UNIQUE_COUNT) {
-                        set.add(lastTuple);
-                    }
+            if (dictionaryBuilder == null) {
+                dictionaryBuilder = new ChannelSetBuilder(block.getType(), MAX_UNIQUE_COUNT, null);
+            }
+
+            for (int position = 0; position < block.getPositionCount(); position++) {
+                // update run length stats
+                Block value = block.getSingleValueBlock(position);
+                if (lastValue == null) {
+                    lastValue = value;
                 }
-                else if (!tuple.equals(lastTuple)) {
+                else if (!value.equalTo(0, lastValue, 0)) {
                     runsCount++;
-                    lastTuple = tuple;
-                    if (set.size() < MAX_UNIQUE_COUNT) {
-                        set.add(lastTuple);
-                    }
+                    lastValue = value;
                 }
+
+                // update dictionary stats
+                if (dictionaryBuilder.size() < MAX_UNIQUE_COUNT) {
+                    dictionaryBuilder.add(position, block);
+                }
+
                 rowCount++;
             }
         }
@@ -185,7 +164,11 @@ public class BlocksFileWriter
         public BlocksFileStats build()
         {
             // TODO: expose a way to indicate whether the unique count is EXACT or APPROXIMATE
-            return new BlocksFileStats(rowCount, runsCount + 1, rowCount / (runsCount + 1), (set.size() == MAX_UNIQUE_COUNT) ? Integer.MAX_VALUE : set.size());
+            return new BlocksFileStats(
+                    rowCount,
+                    runsCount + 1,
+                    rowCount / (runsCount + 1),
+                    (dictionaryBuilder.size() >= MAX_UNIQUE_COUNT) ? Integer.MAX_VALUE : dictionaryBuilder.size());
         }
     }
 }

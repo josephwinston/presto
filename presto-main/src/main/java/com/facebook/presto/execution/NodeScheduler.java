@@ -13,13 +13,15 @@
  */
 package com.facebook.presto.execution;
 
+import com.facebook.presto.metadata.Split;
 import com.facebook.presto.spi.HostAddress;
 import com.facebook.presto.spi.Node;
 import com.facebook.presto.spi.NodeManager;
-import com.facebook.presto.spi.Split;
+import com.google.common.base.Predicate;
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.AbstractIterator;
+import com.google.common.collect.FluentIterable;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSetMultimap;
@@ -33,8 +35,6 @@ import javax.inject.Inject;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -45,8 +45,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.facebook.presto.spi.StandardErrorCode.NO_NODES_AVAILABLE;
+import static com.facebook.presto.util.Failures.checkCondition;
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Preconditions.checkState;
 
 public class NodeScheduler
 {
@@ -55,12 +56,16 @@ public class NodeScheduler
     private final AtomicLong scheduleRack = new AtomicLong();
     private final AtomicLong scheduleRandom = new AtomicLong();
     private final int minCandidates;
+    private final boolean locationAwareScheduling;
+    private final boolean includeCoordinator;
 
     @Inject
     public NodeScheduler(NodeManager nodeManager, NodeSchedulerConfig config)
     {
         this.nodeManager = nodeManager;
         this.minCandidates = config.getMinCandidates();
+        this.locationAwareScheduling = config.isLocationAwareSchedulingEnabled();
+        this.includeCoordinator = config.isIncludeCoordinator();
     }
 
     @Managed
@@ -107,7 +112,15 @@ public class NodeScheduler
                     nodes = nodeManager.getActiveDatasourceNodes(dataSourceName);
                 }
                 else {
-                    nodes = nodeManager.getActiveNodes();
+                    nodes = FluentIterable.from(nodeManager.getActiveNodes()).filter(new Predicate<Node>() {
+                        @Override
+                        public boolean apply(Node node)
+                        {
+                            // TODO: This only filters out the coordinator if it's the current node, which does not work if we have multiple coordinators.
+                            // Instead we should have the coordinator announce that it's a coordinator in service discovery.
+                            return includeCoordinator || !nodeManager.getCurrentNode().getNodeIdentifier().equals(node.getNodeIdentifier());
+                        }
+                    }).toSet();
                 }
 
                 for (Node node : nodes) {
@@ -164,14 +177,7 @@ public class NodeScheduler
         {
             checkArgument(limit > 0, "limit must be at least 1");
 
-            List<Node> nodes = new ArrayList<>(nodeMap.get().get().getNodesByHostAndPort().values());
-
-            if (nodes.size() > limit) {
-                Collections.shuffle(nodes, ThreadLocalRandom.current());
-                nodes = nodes.subList(0, limit);
-            }
-
-            return ImmutableList.copyOf(nodes);
+            return ImmutableList.copyOf(FluentIterable.from(lazyShuffle(nodeMap.get().get().getNodesByHostAndPort().values())).limit(limit));
         }
 
         public Multimap<Node, Split> computeAssignments(Set<Split> splits)
@@ -179,8 +185,14 @@ public class NodeScheduler
             Multimap<Node, Split> assignment = HashMultimap.create();
 
             for (Split split : splits) {
-                List<Node> candidateNodes = selectCandidateNodes(nodeMap.get().get(), split);
-                checkState(!candidateNodes.isEmpty(), "No nodes available to run query");
+                List<Node> candidateNodes;
+                if (locationAwareScheduling) {
+                    candidateNodes = selectCandidateNodes(nodeMap.get().get(), split);
+                }
+                else {
+                    candidateNodes = selectRandomNodes(minCandidates);
+                }
+                checkCondition(!candidateNodes.isEmpty(), NO_NODES_AVAILABLE, "No nodes available to run query");
 
                 Node chosen = null;
                 int min = Integer.MAX_VALUE;

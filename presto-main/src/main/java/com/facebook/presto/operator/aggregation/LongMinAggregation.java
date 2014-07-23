@@ -13,137 +13,34 @@
  */
 package com.facebook.presto.operator.aggregation;
 
-import com.facebook.presto.block.Block;
-import com.facebook.presto.block.BlockBuilder;
-import com.facebook.presto.block.BlockCursor;
-import com.facebook.presto.operator.GroupByIdBlock;
-import com.facebook.presto.util.array.BooleanBigArray;
-import com.facebook.presto.util.array.LongBigArray;
-import com.google.common.base.Optional;
+import com.facebook.presto.operator.aggregation.state.InitialLongValue;
+import com.facebook.presto.operator.aggregation.state.NullableLongState;
+import com.facebook.presto.spi.block.Block;
 
-import static com.facebook.presto.tuple.TupleInfo.SINGLE_LONG;
-import static com.facebook.presto.tuple.TupleInfo.Type.FIXED_INT_64;
-import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Preconditions.checkState;
+import static com.facebook.presto.spi.type.BigintType.BIGINT;
 
 public class LongMinAggregation
-        extends SimpleAggregationFunction
+        extends AbstractSimpleAggregationFunction<LongMinAggregation.LongMinState>
 {
     public static final LongMinAggregation LONG_MIN = new LongMinAggregation();
 
     public LongMinAggregation()
     {
-        super(SINGLE_LONG, SINGLE_LONG, FIXED_INT_64);
+        super(BIGINT, BIGINT, BIGINT);
     }
 
     @Override
-    protected GroupedAccumulator createGroupedAccumulator(Optional<Integer> maskChannel, Optional<Integer> sampleWeightChannel, double confidence, int valueChannel)
+    public void processInput(LongMinState state, Block block, int index)
     {
-        // Min/max are not effected by distinct, so ignore it.
-        checkArgument(confidence == 1.0, "min does not support approximate queries");
-        return new LongMinGroupedAccumulator(valueChannel);
+        state.setNull(false);
+        state.setLong(Math.min(state.getLong(), block.getLong(index)));
     }
 
-    public static class LongMinGroupedAccumulator
-            extends SimpleGroupedAccumulator
+    public interface LongMinState
+            extends NullableLongState
     {
-        private final BooleanBigArray notNull;
-        private final LongBigArray minValues;
-
-        public LongMinGroupedAccumulator(int valueChannel)
-        {
-            super(valueChannel, SINGLE_LONG, SINGLE_LONG, Optional.<Integer>absent(), Optional.<Integer>absent());
-
-            this.notNull = new BooleanBigArray();
-
-            this.minValues = new LongBigArray(Long.MAX_VALUE);
-        }
-
         @Override
-        public long getEstimatedSize()
-        {
-            return notNull.sizeOf() + minValues.sizeOf();
-        }
-
-        @Override
-        protected void processInput(GroupByIdBlock groupIdsBlock, Block valuesBlock, Optional<Block> maskBlock, Optional<Block> sampleWeightBlock)
-        {
-            notNull.ensureCapacity(groupIdsBlock.getGroupCount());
-            minValues.ensureCapacity(groupIdsBlock.getGroupCount(), Long.MAX_VALUE);
-
-            BlockCursor values = valuesBlock.cursor();
-
-            for (int position = 0; position < groupIdsBlock.getPositionCount(); position++) {
-                checkState(values.advanceNextPosition());
-
-                long groupId = groupIdsBlock.getGroupId(position);
-
-                if (!values.isNull()) {
-                    notNull.set(groupId, true);
-
-                    long value = values.getLong();
-                    value = Math.min(value, minValues.get(groupId));
-                    minValues.set(groupId, value);
-                }
-            }
-            checkState(!values.advanceNextPosition());
-        }
-
-        @Override
-        public void evaluateFinal(int groupId, BlockBuilder output)
-        {
-            if (notNull.get((long) groupId)) {
-                long value = minValues.get((long) groupId);
-                output.append(value);
-            }
-            else {
-                output.appendNull();
-            }
-        }
-    }
-
-    @Override
-    protected Accumulator createAccumulator(Optional<Integer> maskChannel, Optional<Integer> sampleWeightChannel, double confidence, int valueChannel)
-    {
-        // Min/max are not effected by distinct, so ignore it.
-        checkArgument(confidence == 1.0, "min does not support approximate queries");
-        return new LongMinAccumulator(valueChannel);
-    }
-
-    public static class LongMinAccumulator
-            extends SimpleAccumulator
-    {
-        private boolean notNull;
-        private long min = Long.MAX_VALUE;
-
-        public LongMinAccumulator(int valueChannel)
-        {
-            super(valueChannel, SINGLE_LONG, SINGLE_LONG, Optional.<Integer>absent(), Optional.<Integer>absent());
-        }
-
-        @Override
-        protected void processInput(Block block, Optional<Block> maskBlock, Optional<Block> sampleWeightBlock)
-        {
-            BlockCursor values = block.cursor();
-
-            for (int position = 0; position < block.getPositionCount(); position++) {
-                checkState(values.advanceNextPosition());
-                if (!values.isNull()) {
-                    notNull = true;
-                    min = Math.min(min, values.getLong());
-                }
-            }
-        }
-
-        @Override
-        public void evaluateFinal(BlockBuilder out)
-        {
-            if (notNull) {
-                out.append(min);
-            }
-            else {
-                out.appendNull();
-            }
-        }
+        @InitialLongValue(Long.MAX_VALUE)
+        long getLong();
     }
 }

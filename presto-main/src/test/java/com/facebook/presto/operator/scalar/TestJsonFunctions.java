@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import io.airlift.slice.Slices;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
+import static io.airlift.slice.Slices.utf8Slice;
 import static java.lang.String.format;
 
 public class TestJsonFunctions
@@ -93,14 +93,14 @@ public class TestJsonFunctions
     @Test
     public void testJsonArrayGetLong()
     {
-        assertFunction("JSON_ARRAY_GET('[1]', 0)", Slices.utf8Slice(String.valueOf(1)));
-        assertFunction("JSON_ARRAY_GET('[2, 7, 4]', 1)", Slices.utf8Slice(String.valueOf(7)));
-        assertFunction("JSON_ARRAY_GET('[2, 7, 4, 6, 8, 1, 0]', 6)", Slices.utf8Slice(String.valueOf(0)));
+        assertFunction("JSON_ARRAY_GET('[1]', 0)", utf8Slice(String.valueOf(1)));
+        assertFunction("JSON_ARRAY_GET('[2, 7, 4]', 1)", utf8Slice(String.valueOf(7)));
+        assertFunction("JSON_ARRAY_GET('[2, 7, 4, 6, 8, 1, 0]', 6)", utf8Slice(String.valueOf(0)));
         assertFunction("JSON_ARRAY_GET('[]', 0)", null);
         assertFunction("JSON_ARRAY_GET('[1, 3, 2]', 3)", null);
-        assertFunction("JSON_ARRAY_GET('[2, 7, 4, 6, 8, 1, 0]', -1)", Slices.utf8Slice(String.valueOf(0)));
-        assertFunction("JSON_ARRAY_GET('[2, 7, 4, 6, 8, 1, 0]', -2)", Slices.utf8Slice(String.valueOf(1)));
-        assertFunction("JSON_ARRAY_GET('[2, 7, 4, 6, 8, 1, 0]', -7)", Slices.utf8Slice(String.valueOf(2)));
+        assertFunction("JSON_ARRAY_GET('[2, 7, 4, 6, 8, 1, 0]', -1)", utf8Slice(String.valueOf(0)));
+        assertFunction("JSON_ARRAY_GET('[2, 7, 4, 6, 8, 1, 0]', -2)", utf8Slice(String.valueOf(1)));
+        assertFunction("JSON_ARRAY_GET('[2, 7, 4, 6, 8, 1, 0]', -7)", utf8Slice(String.valueOf(2)));
         assertFunction("JSON_ARRAY_GET('[2, 7, 4, 6, 8, 1, 0]', -8)", null);
     }
 
@@ -116,21 +116,21 @@ public class TestJsonFunctions
     @Test
     public void testJsonArrayGetDouble()
     {
-        assertFunction("JSON_ARRAY_GET('[3.14]', 0)", Slices.utf8Slice(String.valueOf(3.14)));
+        assertFunction("JSON_ARRAY_GET('[3.14]', 0)", utf8Slice(String.valueOf(3.14)));
         assertFunction("JSON_ARRAY_GET('[3.14, null]', 1)", null);
-        assertFunction("JSON_ARRAY_GET('[1.12, 3.54, 2.89]', 1)", Slices.utf8Slice(String.valueOf(3.54)));
-        assertFunction("JSON_ARRAY_GET('[0.58, 9.7, 7.6, 11.2, 5.02]', 4)", Slices.utf8Slice(String.valueOf(5.02)));
+        assertFunction("JSON_ARRAY_GET('[1.12, 3.54, 2.89]', 1)", utf8Slice(String.valueOf(3.54)));
+        assertFunction("JSON_ARRAY_GET('[0.58, 9.7, 7.6, 11.2, 5.02]', 4)", utf8Slice(String.valueOf(5.02)));
     }
 
     @Test
     public void testJsonArrayGetBoolean()
     {
-        assertFunction("JSON_ARRAY_GET('[true]', 0)", Slices.utf8Slice(String.valueOf(true)));
+        assertFunction("JSON_ARRAY_GET('[true]', 0)", utf8Slice(String.valueOf(true)));
         assertFunction("JSON_ARRAY_GET('[true, null]', 1)", null);
-        assertFunction("JSON_ARRAY_GET('[false, false, true]', 1)", Slices.utf8Slice(String.valueOf(false)));
+        assertFunction("JSON_ARRAY_GET('[false, false, true]', 1)", utf8Slice(String.valueOf(false)));
         assertFunction(
                 "JSON_ARRAY_GET('[true, false, false, true, true, false]', 5)",
-                Slices.utf8Slice(String.valueOf(false))
+                utf8Slice(String.valueOf(false))
         );
     }
 
@@ -142,6 +142,19 @@ public class TestJsonFunctions
                 assertFunction(format("JSON_ARRAY_CONTAINS('%s', %s)", array, value), null);
             }
         }
+    }
+
+    @Test
+    public void testJsonSize()
+    {
+        assertFunction(format("JSON_SIZE('%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : 2} }", "$"), 1);
+        assertFunction(format("JSON_SIZE('%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : 2} }", "$.x"), 2);
+        assertFunction(format("JSON_SIZE('%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : [1,2,3], \"c\" : {\"w\":9}} }", "$.x"), 3);
+        assertFunction(format("JSON_SIZE('%s', '%s')", "{\"x\": {\"a\" : 1, \"b\" : 2} }", "$.x.a"), 0);
+        assertFunction(format("JSON_SIZE('%s', '%s')", "[1,2,3]", "$"), 3);
+        assertFunction(format("JSON_SIZE(null, '%s')", "$"), null);
+        assertFunction(format("JSON_SIZE('%s', '%s')", "INVALID_JSON", "$"), null);
+        assertFunction(format("JSON_SIZE('%s', null)", "[1,2,3]"), null);
     }
 
     private void assertFunction(String projection, Object expected)

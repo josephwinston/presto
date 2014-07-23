@@ -13,8 +13,7 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.block.BlockCursor;
-import com.facebook.presto.tuple.TupleInfo;
+import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -31,7 +30,7 @@ public class FilterAndProjectOperator
         private final int operatorId;
         private final FilterFunction filterFunction;
         private final List<ProjectionFunction> projections;
-        private final List<TupleInfo> tupleInfos;
+        private final List<Type> types;
         private boolean closed;
 
         public FilterAndProjectOperatorFactory(int operatorId, FilterFunction filterFunction, Iterable<? extends ProjectionFunction> projections)
@@ -39,13 +38,13 @@ public class FilterAndProjectOperator
             this.operatorId = operatorId;
             this.filterFunction = checkNotNull(filterFunction, "filterFunction is null");
             this.projections = ImmutableList.copyOf(projections);
-            this.tupleInfos = toTupleInfos(checkNotNull(projections, "projections is null"));
+            this.types = toTypes(checkNotNull(projections, "projections is null"));
         }
 
         @Override
-        public List<TupleInfo> getTupleInfos()
+        public List<Type> getTypes()
         {
-            return tupleInfos;
+            return types;
         }
 
         @Override
@@ -68,7 +67,7 @@ public class FilterAndProjectOperator
 
     public FilterAndProjectOperator(OperatorContext operatorContext, FilterFunction filterFunction, Iterable<? extends ProjectionFunction> projections)
     {
-        super(operatorContext, toTupleInfos(checkNotNull(projections, "projections is null")));
+        super(operatorContext, toTypes(checkNotNull(projections, "projections is null")));
         this.filterFunction = checkNotNull(filterFunction, "filterFunction is null");
         this.projections = ImmutableList.copyOf(projections);
     }
@@ -78,36 +77,23 @@ public class FilterAndProjectOperator
     {
         int rows = page.getPositionCount();
 
-        BlockCursor[] cursors = new BlockCursor[page.getChannelCount()];
-        for (int i = 0; i < page.getChannelCount(); i++) {
-            cursors[i] = page.getBlock(i).cursor();
-        }
-
         for (int position = 0; position < rows; position++) {
-            for (BlockCursor cursor : cursors) {
-                checkState(cursor.advanceNextPosition());
-            }
-
-            if (filterFunction.filter(cursors)) {
+            if (filterFunction.filter(position, page.getBlocks())) {
                 pageBuilder.declarePosition();
                 for (int i = 0; i < projections.size(); i++) {
                     // todo: if the projection function increases the size of the data significantly, this could cause the servers to OOM
-                    projections.get(i).project(cursors, pageBuilder.getBlockBuilder(i));
+                    projections.get(i).project(position, page.getBlocks(), pageBuilder.getBlockBuilder(i));
                 }
             }
         }
-
-        for (BlockCursor cursor : cursors) {
-            checkState(!cursor.advanceNextPosition());
-        }
     }
 
-    private static List<TupleInfo> toTupleInfos(Iterable<? extends ProjectionFunction> projections)
+    private static List<Type> toTypes(Iterable<? extends ProjectionFunction> projections)
     {
-        ImmutableList.Builder<TupleInfo> tupleInfos = ImmutableList.builder();
+        ImmutableList.Builder<Type> types = ImmutableList.builder();
         for (ProjectionFunction projection : projections) {
-            tupleInfos.add(projection.getTupleInfo());
+            types.add(projection.getType());
         }
-        return tupleInfos.build();
+        return types.build();
     }
 }

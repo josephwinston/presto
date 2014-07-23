@@ -15,7 +15,7 @@ package com.facebook.presto.execution;
 
 import com.facebook.presto.OutputBuffers;
 import com.facebook.presto.TaskSource;
-import com.facebook.presto.sql.analyzer.Session;
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.sql.planner.PlanFragment;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
@@ -24,14 +24,14 @@ import java.util.List;
 
 public interface TaskManager
 {
-    List<TaskInfo> getAllTaskInfo(boolean full);
+    List<TaskInfo> getAllTaskInfo();
 
     void waitForStateChange(TaskId taskId, TaskState currentState, Duration maxWait)
             throws InterruptedException;
 
-    TaskInfo getTaskInfo(TaskId taskId, boolean full);
+    TaskInfo getTaskInfo(TaskId taskId);
 
-    TaskInfo updateTask(Session session, TaskId taskId, PlanFragment fragment, List<TaskSource> sources, OutputBuffers outputIds);
+    TaskInfo updateTask(ConnectorSession session, TaskId taskId, PlanFragment fragment, List<TaskSource> sources, OutputBuffers outputIds);
 
     BufferResult getTaskResults(TaskId taskId, String outputName, long startingSequenceId, DataSize maxSize, Duration maxWaitTime)
             throws InterruptedException;

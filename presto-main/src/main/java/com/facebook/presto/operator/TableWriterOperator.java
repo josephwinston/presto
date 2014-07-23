@@ -13,48 +13,62 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.block.BlockCursor;
 import com.facebook.presto.spi.RecordSink;
-import com.facebook.presto.tuple.TupleInfo;
+import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.spi.type.Type;
+import com.google.common.base.Function;
 import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Iterables;
 import com.google.common.util.concurrent.ListenableFuture;
+import io.airlift.slice.Slices;
 
 import java.util.List;
 
-import static com.facebook.presto.tuple.TupleInfo.SINGLE_LONG;
-import static com.facebook.presto.tuple.TupleInfo.SINGLE_VARBINARY;
-import static com.facebook.presto.tuple.TupleInfo.Type;
-import static com.google.common.base.Preconditions.checkArgument;
+import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
+import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
 public class TableWriterOperator
         implements Operator
 {
-    public static final List<TupleInfo> TUPLE_INFOS = ImmutableList.of(SINGLE_LONG, SINGLE_VARBINARY);
+    public static final List<Type> TYPES = ImmutableList.of(BIGINT, VARCHAR);
 
     public static class TableWriterOperatorFactory
             implements OperatorFactory
     {
         private final int operatorId;
         private final RecordSink recordSink;
-        private final List<Type> outputTypes;
+        private final List<Integer> inputChannels;
+        private final List<Type> recordTypes;
         private final Optional<Integer> sampleWeightChannel;
         private boolean closed;
 
-        public TableWriterOperatorFactory(int operatorId, RecordSink recordSink, List<Type> outputTypes, Optional<Integer> sampleWeightChannel)
+        public TableWriterOperatorFactory(int operatorId, RecordSink recordSink, List<Type> recordTypes, List<Integer> inputChannels, Optional<Integer> sampleWeightChannel)
         {
             this.operatorId = operatorId;
+            this.inputChannels = checkNotNull(inputChannels, "inputChannels is null");
             this.recordSink = checkNotNull(recordSink, "recordSink is null");
-            this.outputTypes = checkNotNull(outputTypes, "outputTypes is null");
+
+            checkNotNull(recordTypes, "types is null");
+            this.recordTypes = ImmutableList.copyOf(Iterables.transform(recordTypes, new Function<Type, Type>()
+            {
+                public Type apply(Type type)
+                {
+                    return type;
+                }
+            }));
+
             this.sampleWeightChannel = checkNotNull(sampleWeightChannel, "sampleWeightChannel is null");
         }
 
         @Override
-        public List<TupleInfo> getTupleInfos()
+        public List<Type> getTypes()
         {
-            return TUPLE_INFOS;
+            return TYPES;
         }
 
         @Override
@@ -62,7 +76,7 @@ public class TableWriterOperator
         {
             checkState(!closed, "Factory is already closed");
             OperatorContext context = driverContext.addOperatorContext(operatorId, TableWriterOperator.class.getSimpleName());
-            return new TableWriterOperator(context, recordSink, outputTypes, sampleWeightChannel);
+            return new TableWriterOperator(context, recordSink, recordTypes, inputChannels, sampleWeightChannel);
         }
 
         @Override
@@ -80,27 +94,23 @@ public class TableWriterOperator
     private final OperatorContext operatorContext;
     private final RecordSink recordSink;
     private final Optional<Integer> sampleWeightChannel;
-    private final List<Type> outputTypes;
-    // Maps output channels to the corresponding input channel (identity mapping, unless sample weight channel is present)
-    private final int[] inputChannels;
+    private final List<Type> recordTypes;
+    private final List<Integer> inputChannels;
 
     private State state = State.RUNNING;
     private long rowCount;
 
-    public TableWriterOperator(OperatorContext operatorContext, RecordSink recordSink, List<Type> outputTypes, Optional<Integer> sampleWeightChannel)
+    public TableWriterOperator(OperatorContext operatorContext,
+            RecordSink recordSink,
+            List<Type> recordTypes,
+            List<Integer> inputChannels,
+            Optional<Integer> sampleWeightChannel)
     {
         this.operatorContext = checkNotNull(operatorContext, "operatorContext is null");
         this.recordSink = checkNotNull(recordSink, "recordSink is null");
-        this.outputTypes = checkNotNull(outputTypes, "outputTypes is null");
+        this.recordTypes = recordTypes;
         this.sampleWeightChannel = checkNotNull(sampleWeightChannel, "sampleWeightChannel is null");
-        this.inputChannels = new int[outputTypes.size()];
-        for (int inputChannel = 0, outputChannel = 0; outputChannel < inputChannels.length; inputChannel++, outputChannel++) {
-            if (sampleWeightChannel.isPresent() && inputChannel == sampleWeightChannel.get()) {
-                // Skip the sample weight channel in the input, since it's passed to the RecordSink out of band
-                inputChannel++;
-            }
-            inputChannels[outputChannel] = inputChannel;
-        }
+        this.inputChannels = checkNotNull(inputChannels, "inputChannels is null");
     }
 
     @Override
@@ -110,9 +120,9 @@ public class TableWriterOperator
     }
 
     @Override
-    public List<TupleInfo> getTupleInfos()
+    public List<Type> getTypes()
     {
-        return TUPLE_INFOS;
+        return TYPES;
     }
 
     @Override
@@ -147,64 +157,53 @@ public class TableWriterOperator
         checkNotNull(page, "page is null");
         checkState(state == State.RUNNING, "Operator is %s", state);
 
-        BlockCursor[] cursors;
-        BlockCursor sampleWeightCursor = null;
+        Block sampleWeightBlock = null;
         if (sampleWeightChannel.isPresent()) {
-            cursors = new BlockCursor[page.getChannelCount() - 1];
-            sampleWeightCursor = page.getBlock(sampleWeightChannel.get()).cursor();
-        }
-        else {
-            cursors = new BlockCursor[page.getChannelCount()];
+            sampleWeightBlock = page.getBlock(sampleWeightChannel.get());
         }
 
-        for (int outputChannel = 0; outputChannel < cursors.length; outputChannel++) {
-            cursors[outputChannel] = page.getBlock(inputChannels[outputChannel]).cursor();
+        Block[] blocks = new Block[inputChannels.size()];
+        for (int outputChannel = 0; outputChannel < inputChannels.size(); outputChannel++) {
+            blocks[outputChannel] = page.getBlock(inputChannels.get(outputChannel));
         }
 
         int rows = 0;
         for (int position = 0; position < page.getPositionCount(); position++) {
             long sampleWeight = 1;
-            if (sampleWeightCursor != null) {
-                checkArgument(sampleWeightCursor.advanceNextPosition());
-                sampleWeight = sampleWeightCursor.getLong();
+            if (sampleWeightBlock != null) {
+                sampleWeight = sampleWeightBlock.getLong(position);
             }
             rows += sampleWeight;
             recordSink.beginRecord(sampleWeight);
-            for (int i = 0; i < cursors.length; i++) {
-                checkArgument(cursors[i].advanceNextPosition());
-                writeField(cursors[i], outputTypes.get(i));
+            for (int i = 0; i < blocks.length; i++) {
+                writeField(position, blocks[i], recordTypes.get(i));
             }
             recordSink.finishRecord();
         }
         rowCount += rows;
-
-        for (BlockCursor cursor : cursors) {
-            checkArgument(!cursor.advanceNextPosition());
-        }
     }
 
-    private void writeField(BlockCursor cursor, Type type)
+    private void writeField(int position, Block block, Type type)
     {
-        if (cursor.isNull()) {
+        if (block.isNull(position)) {
             recordSink.appendNull();
             return;
         }
 
-        switch (type) {
-            case BOOLEAN:
-                recordSink.appendBoolean(cursor.getBoolean());
-                break;
-            case FIXED_INT_64:
-                recordSink.appendLong(cursor.getLong());
-                break;
-            case DOUBLE:
-                recordSink.appendDouble(cursor.getDouble());
-                break;
-            case VARIABLE_BINARY:
-                recordSink.appendString(cursor.getSlice().getBytes());
-                break;
-            default:
-                throw new AssertionError("unimplemented type: " + type);
+        if (type.equals(BOOLEAN)) {
+            recordSink.appendBoolean(block.getBoolean(position));
+        }
+        else if (type.equals(BIGINT)) {
+            recordSink.appendLong(block.getLong(position));
+        }
+        else if (type.equals(DOUBLE)) {
+            recordSink.appendDouble(block.getDouble(position));
+        }
+        else if (type.equals(VARCHAR)) {
+            recordSink.appendString(block.getSlice(position).getBytes());
+        }
+        else {
+            throw new AssertionError("unimplemented type: " + type);
         }
     }
 
@@ -218,9 +217,9 @@ public class TableWriterOperator
 
         String fragment = recordSink.commit();
 
-        PageBuilder page = new PageBuilder(getTupleInfos());
-        page.getBlockBuilder(0).append(rowCount);
-        page.getBlockBuilder(1).append(fragment);
+        PageBuilder page = new PageBuilder(TYPES);
+        page.getBlockBuilder(0).appendLong(rowCount);
+        page.getBlockBuilder(1).appendSlice(Slices.utf8Slice(fragment));
         return page.build();
     }
 }

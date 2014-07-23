@@ -13,14 +13,19 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.block.Block;
+import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.block.Block;
 import com.google.common.base.Function;
 import com.google.common.base.Objects;
 import com.google.common.base.Preconditions;
+import io.airlift.slice.Slice;
 import io.airlift.units.DataSize;
 import io.airlift.units.DataSize.Unit;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 
 public class Page
 {
@@ -53,7 +58,7 @@ public class Page
     {
         long dataSize = 0;
         for (Block block : blocks) {
-            dataSize += block.getDataSize().toBytes();
+            dataSize += block.getSizeInBytes();
         }
         return new DataSize(dataSize, Unit.BYTE);
     }
@@ -68,16 +73,45 @@ public class Page
         return blocks[channel];
     }
 
-    public Function<Integer, Block> blockGetter()
+    public boolean getBoolean(int channel, int position)
     {
-        return new Function<Integer, Block>()
-        {
-            @Override
-            public Block apply(Integer input)
-            {
-                return getBlock(input);
-            }
-        };
+        return getBlock(channel).getBoolean(position);
+    }
+
+    public long getLong(int channel, int position)
+    {
+        return getBlock(channel).getLong(position);
+    }
+
+    public double getDouble(int channel, int position)
+    {
+        return getBlock(channel).getDouble(position);
+    }
+
+    public Slice getSlice(int channel, int position)
+    {
+        return getBlock(channel).getSlice(position);
+    }
+
+    public boolean isNull(int channel, int position)
+    {
+        return getBlock(channel).isNull(position);
+    }
+
+    public void appendTo(int position, PageBuilder pageBuilder)
+    {
+        for (int channel = 0; channel < blocks.length; channel++) {
+            blocks[channel].appendTo(position, pageBuilder.getBlockBuilder(channel));
+        }
+    }
+
+    public List<Object> getObjectValues(ConnectorSession session, int position)
+    {
+        List<Object> values = new ArrayList<>(blocks.length);
+        for (Block block : blocks) {
+            values.add(block.getObjectValue(session, position));
+        }
+        return Collections.unmodifiableList(values);
     }
 
     @Override
@@ -88,5 +122,17 @@ public class Page
                 .add("channelCount", getChannelCount())
                 .addValue("@" + Integer.toHexString(System.identityHashCode(this)))
                 .toString();
+    }
+
+    public Function<Integer, Block> blockGetter()
+    {
+        return new Function<Integer, Block>()
+        {
+            @Override
+            public Block apply(Integer input)
+            {
+                return getBlock(input);
+            }
+        };
     }
 }

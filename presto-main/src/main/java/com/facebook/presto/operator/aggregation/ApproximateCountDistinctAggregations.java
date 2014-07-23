@@ -13,46 +13,16 @@
  */
 package com.facebook.presto.operator.aggregation;
 
-import com.facebook.presto.operator.aggregation.ApproximateCountDistinctAggregation.ApproximateCountDistinctAccumulator;
-import com.facebook.presto.operator.aggregation.ApproximateCountDistinctAggregation.ApproximateCountDistinctGroupedAccumulator;
-import com.facebook.presto.operator.aggregation.SimpleAggregationFunction.SimpleAccumulator;
-import com.facebook.presto.operator.aggregation.SimpleAggregationFunction.SimpleGroupedAccumulator;
-import com.facebook.presto.tuple.TupleInfo.Type;
-import com.google.common.base.Throwables;
-
-import static com.facebook.presto.tuple.TupleInfo.Type.DOUBLE;
-import static com.facebook.presto.tuple.TupleInfo.Type.FIXED_INT_64;
-import static com.facebook.presto.tuple.TupleInfo.Type.VARIABLE_BINARY;
+import static com.facebook.presto.operator.aggregation.AggregationUtils.createIsolatedAggregation;
+import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
+import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 
 public final class ApproximateCountDistinctAggregations
 {
-    public static final AggregationFunction LONG_APPROXIMATE_COUNT_DISTINCT_AGGREGATIONS = createIsolatedAggregation(FIXED_INT_64);
-    public static final AggregationFunction DOUBLE_APPROXIMATE_COUNT_DISTINCT_AGGREGATIONS = createIsolatedAggregation(DOUBLE);
-    public static final AggregationFunction VARBINARY_APPROXIMATE_COUNT_DISTINCT_AGGREGATIONS = createIsolatedAggregation(VARIABLE_BINARY);
+    public static final AggregationFunction LONG_APPROXIMATE_COUNT_DISTINCT_AGGREGATIONS = createIsolatedAggregation(ApproximateCountDistinctAggregation.class, BIGINT);
+    public static final AggregationFunction DOUBLE_APPROXIMATE_COUNT_DISTINCT_AGGREGATIONS = createIsolatedAggregation(ApproximateCountDistinctAggregation.class, DOUBLE);
+    public static final AggregationFunction VARBINARY_APPROXIMATE_COUNT_DISTINCT_AGGREGATIONS = createIsolatedAggregation(ApproximateCountDistinctAggregation.class, VARCHAR);
 
     private ApproximateCountDistinctAggregations() {}
-
-    private static AggregationFunction createIsolatedAggregation(Type parameterType)
-    {
-        Class<? extends AggregationFunction> functionClass = IsolatedClass.isolateClass(
-                AggregationFunction.class,
-
-                ApproximateCountDistinctAggregation.class,
-                SimpleAggregationFunction.class,
-
-                ApproximateCountDistinctGroupedAccumulator.class,
-                SimpleGroupedAccumulator.class,
-
-                ApproximateCountDistinctAccumulator.class,
-                SimpleAccumulator.class);
-
-        try {
-            return functionClass
-                    .getConstructor(Type.class)
-                    .newInstance(parameterType);
-        }
-        catch (Exception e) {
-            throw Throwables.propagate(e);
-        }
-    }
 }

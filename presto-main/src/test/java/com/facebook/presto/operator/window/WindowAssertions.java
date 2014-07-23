@@ -13,39 +13,25 @@
  */
 package com.facebook.presto.operator.window;
 
-import com.facebook.presto.sql.analyzer.Session;
-import com.facebook.presto.tpch.TpchConnectorFactory;
-import com.facebook.presto.tpch.TpchMetadata;
-import com.facebook.presto.util.LocalQueryRunner;
-import com.facebook.presto.util.MaterializedResult;
-import com.google.common.collect.ImmutableMap;
+import com.facebook.presto.testing.LocalQueryRunner;
+import com.facebook.presto.testing.MaterializedResult;
 import org.intellij.lang.annotations.Language;
 
-import java.util.concurrent.ExecutorService;
-
-import static com.facebook.presto.AbstractTestQueries.assertEqualsIgnoreOrder;
+import static io.airlift.testing.Assertions.assertEqualsIgnoreOrder;
 import static java.lang.String.format;
 
 public final class WindowAssertions
 {
     private WindowAssertions() {}
 
-    public static MaterializedResult computeActual(@Language("SQL") String sql, ExecutorService executor)
-    {
-        LocalQueryRunner localQueryRunner = new LocalQueryRunner(new Session("user", "test", "tpch", TpchMetadata.TINY_SCHEMA_NAME, null, null), executor);
-        localQueryRunner.createCatalog("tpch", new TpchConnectorFactory(localQueryRunner.getNodeManager(), 1), ImmutableMap.<String, String>of());
-
-        return localQueryRunner.execute(sql);
-    }
-
-    public static void assertWindowQuery(@Language("SQL") String sql, MaterializedResult expected, ExecutorService executor)
+    public static void assertWindowQuery(@Language("SQL") String sql, MaterializedResult expected, LocalQueryRunner localQueryRunner)
     {
         @Language("SQL") String query = format("" +
                 "SELECT orderkey, orderstatus,\n%s\n" +
                 "FROM (SELECT * FROM orders ORDER BY orderkey LIMIT 10) x\n" +
                 "ORDER BY orderkey", sql);
 
-        MaterializedResult actual = computeActual(query, executor);
-        assertEqualsIgnoreOrder(actual.getMaterializedTuples(), expected.getMaterializedTuples());
+        MaterializedResult actual = localQueryRunner.execute(query);
+        assertEqualsIgnoreOrder(actual.getMaterializedRows(), expected.getMaterializedRows());
     }
 }

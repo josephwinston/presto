@@ -13,34 +13,36 @@
  */
 package com.facebook.presto.connector.system;
 
-import com.facebook.presto.connector.InternalConnector;
+import com.facebook.presto.spi.Connector;
 import com.facebook.presto.spi.ConnectorHandleResolver;
+import com.facebook.presto.spi.ConnectorIndexResolver;
 import com.facebook.presto.spi.ConnectorMetadata;
 import com.facebook.presto.spi.ConnectorOutputHandleResolver;
 import com.facebook.presto.spi.ConnectorRecordSetProvider;
 import com.facebook.presto.spi.ConnectorRecordSinkProvider;
 import com.facebook.presto.spi.ConnectorSplitManager;
-import com.facebook.presto.split.ConnectorDataStreamProvider;
 import com.google.common.base.Preconditions;
 
 import javax.inject.Inject;
 
 public class SystemConnector
-        implements InternalConnector
+        implements Connector
 {
+    public static final String CONNECTOR_ID = "system";
+
     private final SystemTablesMetadata metadata;
     private final SystemSplitManager splitManager;
-    private final SystemDataStreamProvider dataStreamProvider;
+    private final SystemRecordSetProvider recordSetProvider;
 
     @Inject
     public SystemConnector(
             SystemTablesMetadata metadata,
             SystemSplitManager splitManager,
-            SystemDataStreamProvider dataStreamProvider)
+            SystemRecordSetProvider recordSetProvider)
     {
         this.metadata = Preconditions.checkNotNull(metadata, "metadata is null");
         this.splitManager = Preconditions.checkNotNull(splitManager, "splitManager is null");
-        this.dataStreamProvider = Preconditions.checkNotNull(dataStreamProvider, "dataStreamProvider is null");
+        this.recordSetProvider = Preconditions.checkNotNull(recordSetProvider, "recordSetProvider is null");
     }
 
     @Override
@@ -56,12 +58,6 @@ public class SystemConnector
     }
 
     @Override
-    public ConnectorDataStreamProvider getDataStreamProvider()
-    {
-        return dataStreamProvider;
-    }
-
-    @Override
     public ConnectorHandleResolver getHandleResolver()
     {
         return new SystemHandleResolver();
@@ -70,7 +66,7 @@ public class SystemConnector
     @Override
     public ConnectorRecordSetProvider getRecordSetProvider()
     {
-        throw new UnsupportedOperationException();
+        return recordSetProvider;
     }
 
     @Override
@@ -81,6 +77,12 @@ public class SystemConnector
 
     @Override
     public ConnectorOutputHandleResolver getOutputHandleResolver()
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public ConnectorIndexResolver getIndexResolver()
     {
         throw new UnsupportedOperationException();
     }

@@ -16,12 +16,17 @@ package com.facebook.presto.sql.analyzer;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.MetadataUtil;
 import com.facebook.presto.metadata.QualifiedTableName;
+import com.facebook.presto.metadata.TableHandle;
 import com.facebook.presto.spi.ColumnMetadata;
-import com.facebook.presto.spi.TableHandle;
+import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.sql.parser.SqlParser;
+import com.facebook.presto.sql.tree.AllColumns;
 import com.facebook.presto.sql.tree.Approximate;
 import com.facebook.presto.sql.tree.BooleanLiteral;
 import com.facebook.presto.sql.tree.Cast;
+import com.facebook.presto.sql.tree.CoalesceExpression;
 import com.facebook.presto.sql.tree.CreateTable;
+import com.facebook.presto.sql.tree.CreateView;
 import com.facebook.presto.sql.tree.DefaultTraversalVisitor;
 import com.facebook.presto.sql.tree.Explain;
 import com.facebook.presto.sql.tree.ExplainFormat;
@@ -43,6 +48,7 @@ import com.facebook.presto.sql.tree.ShowSchemas;
 import com.facebook.presto.sql.tree.ShowTables;
 import com.facebook.presto.sql.tree.SingleColumn;
 import com.facebook.presto.sql.tree.SortItem;
+import com.facebook.presto.sql.tree.Statement;
 import com.facebook.presto.sql.tree.StringLiteral;
 import com.facebook.presto.sql.tree.UseCollection;
 import com.facebook.presto.sql.tree.With;
@@ -60,7 +66,22 @@ import static com.facebook.presto.connector.informationSchema.InformationSchemaM
 import static com.facebook.presto.connector.informationSchema.InformationSchemaMetadata.TABLE_SCHEMATA;
 import static com.facebook.presto.connector.informationSchema.InformationSchemaMetadata.TABLE_TABLES;
 import static com.facebook.presto.connector.system.CatalogSystemTable.CATALOG_TABLE_NAME;
-import static com.facebook.presto.sql.analyzer.Analyzer.ExpressionAnalysis;
+import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.sql.QueryUtil.aliased;
+import static com.facebook.presto.sql.QueryUtil.aliasedName;
+import static com.facebook.presto.sql.QueryUtil.ascending;
+import static com.facebook.presto.sql.QueryUtil.caseWhen;
+import static com.facebook.presto.sql.QueryUtil.equal;
+import static com.facebook.presto.sql.QueryUtil.functionCall;
+import static com.facebook.presto.sql.QueryUtil.logicalAnd;
+import static com.facebook.presto.sql.QueryUtil.nameReference;
+import static com.facebook.presto.sql.QueryUtil.row;
+import static com.facebook.presto.sql.QueryUtil.selectAll;
+import static com.facebook.presto.sql.QueryUtil.selectList;
+import static com.facebook.presto.sql.QueryUtil.subquery;
+import static com.facebook.presto.sql.QueryUtil.table;
+import static com.facebook.presto.sql.QueryUtil.unaliasedName;
+import static com.facebook.presto.sql.QueryUtil.values;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.COLUMN_NAME_NOT_SPECIFIED;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.DUPLICATE_COLUMN_NAME;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.DUPLICATE_RELATION;
@@ -71,18 +92,6 @@ import static com.facebook.presto.sql.analyzer.SemanticErrorCode.NOT_SUPPORTED;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.TABLE_ALREADY_EXISTS;
 import static com.facebook.presto.sql.tree.ExplainFormat.Type.TEXT;
 import static com.facebook.presto.sql.tree.ExplainType.Type.LOGICAL;
-import static com.facebook.presto.sql.tree.QueryUtil.aliasedName;
-import static com.facebook.presto.sql.tree.QueryUtil.ascending;
-import static com.facebook.presto.sql.tree.QueryUtil.caseWhen;
-import static com.facebook.presto.sql.tree.QueryUtil.equal;
-import static com.facebook.presto.sql.tree.QueryUtil.functionCall;
-import static com.facebook.presto.sql.tree.QueryUtil.logicalAnd;
-import static com.facebook.presto.sql.tree.QueryUtil.nameReference;
-import static com.facebook.presto.sql.tree.QueryUtil.selectAll;
-import static com.facebook.presto.sql.tree.QueryUtil.selectList;
-import static com.facebook.presto.sql.tree.QueryUtil.subquery;
-import static com.facebook.presto.sql.tree.QueryUtil.table;
-import static com.facebook.presto.sql.tree.QueryUtil.unaliasedName;
 import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
@@ -91,14 +100,22 @@ class StatementAnalyzer
 {
     private final Analysis analysis;
     private final Metadata metadata;
-    private final Session session;
+    private final ConnectorSession session;
     private final Optional<QueryExplainer> queryExplainer;
     private final boolean experimentalSyntaxEnabled;
+    private final SqlParser sqlParser;
 
-    public StatementAnalyzer(Analysis analysis, Metadata metadata, Session session, boolean experimentalSyntaxEnabled, Optional<QueryExplainer> queryExplainer)
+    public StatementAnalyzer(
+            Analysis analysis,
+            Metadata metadata,
+            SqlParser sqlParser,
+            ConnectorSession session,
+            boolean experimentalSyntaxEnabled,
+            Optional<QueryExplainer> queryExplainer)
     {
         this.analysis = checkNotNull(analysis, "analysis is null");
         this.metadata = checkNotNull(metadata, "metadata is null");
+        this.sqlParser = checkNotNull(sqlParser, "sqlParser is null");
         this.session = checkNotNull(session, "session is null");
         this.experimentalSyntaxEnabled = experimentalSyntaxEnabled;
         this.queryExplainer = checkNotNull(queryExplainer, "queryExplainer is null");
@@ -197,7 +214,8 @@ class StatementAnalyzer
     {
         QualifiedTableName tableName = MetadataUtil.createQualifiedTableName(session, showColumns.getTable());
 
-        if (!metadata.getTableHandle(tableName).isPresent()) {
+        if (!metadata.getView(session, tableName).isPresent() &&
+                !metadata.getTableHandle(session, tableName).isPresent()) {
             throw new SemanticException(MISSING_TABLE, showColumns, "Table '%s' does not exist", tableName);
         }
 
@@ -208,7 +226,8 @@ class StatementAnalyzer
                                 aliasedName("column_name", "Column"),
                                 aliasedName("data_type", "Type"),
                                 aliasedYesNoToBoolean("is_nullable", "Null"),
-                                aliasedYesNoToBoolean("is_partition_key", "Partition Key")),
+                                aliasedYesNoToBoolean("is_partition_key", "Partition Key"),
+                                aliasedNullToEmpty("comment", "Comment")),
                         table(QualifiedName.of(tableName.getCatalogName(), TABLE_COLUMNS.getSchemaName(), TABLE_COLUMNS.getTableName())),
                         Optional.of(logicalAnd(
                                 equal(nameReference("table_schema"), new StringLiteral(tableName.getSchemaName())),
@@ -240,11 +259,16 @@ class StatementAnalyzer
         return new SingleColumn(expression, alias);
     }
 
+    private static SelectItem aliasedNullToEmpty(String column, String alias)
+    {
+        return new SingleColumn(new CoalesceExpression(nameReference(column), new StringLiteral("")), alias);
+    }
+
     @Override
     protected TupleDescriptor visitShowPartitions(ShowPartitions showPartitions, AnalysisContext context)
     {
         QualifiedTableName table = MetadataUtil.createQualifiedTableName(session, showPartitions.getTable());
-        Optional<TableHandle> tableHandle = metadata.getTableHandle(table);
+        Optional<TableHandle> tableHandle = metadata.getTableHandle(session, table);
         if (!tableHandle.isPresent()) {
             throw new SemanticException(MISSING_TABLE, showPartitions, "Table '%s' does not exist", table);
         }
@@ -274,7 +298,7 @@ class StatementAnalyzer
             }
             Expression key = equal(nameReference("partition_key"), new StringLiteral(column.getName()));
             Expression value = caseWhen(key, nameReference("partition_value"));
-            value = new Cast(value, Type.fromRaw(column.getType()).getName());
+            value = new Cast(value, column.getType().getName());
             Expression function = functionCall("max", value);
             selectList.add(new SingleColumn(function, column.getName()));
             wrappedList.add(unaliasedName(column.getName()));
@@ -353,7 +377,7 @@ class StatementAnalyzer
         QualifiedTableName targetTable = MetadataUtil.createQualifiedTableName(session, node.getName());
         analysis.setCreateTableDestination(targetTable);
 
-        Optional<TableHandle> targetTableHandle = metadata.getTableHandle(targetTable);
+        Optional<TableHandle> targetTableHandle = metadata.getTableHandle(session, targetTable);
         if (targetTableHandle.isPresent()) {
             throw new SemanticException(TABLE_ALREADY_EXISTS, node, "Destination table '%s' already exists", targetTable);
         }
@@ -361,21 +385,36 @@ class StatementAnalyzer
         // analyze the query that creates the table
         TupleDescriptor descriptor = process(node.getQuery(), context);
 
+        validateColumnNames(node, descriptor);
+
+        return new TupleDescriptor(Field.newUnqualified("rows", BIGINT));
+    }
+
+    @Override
+    protected TupleDescriptor visitCreateView(CreateView node, AnalysisContext context)
+    {
+        // analyze the query that creates the view
+        TupleDescriptor descriptor = process(node.getQuery(), context);
+
+        validateColumnNames(node, descriptor);
+
+        return descriptor;
+    }
+
+    private static void validateColumnNames(Statement node, TupleDescriptor descriptor)
+    {
         // verify that all column names are specified and unique
         // TODO: collect errors and return them all at once
         Set<String> names = new HashSet<>();
-        for (int i = 0; i < descriptor.getFields().size(); i++) {
-            Field field = descriptor.getFields().get(i);
+        for (Field field : descriptor.getVisibleFields()) {
             Optional<String> fieldName = field.getName();
             if (!fieldName.isPresent()) {
-                throw new SemanticException(COLUMN_NAME_NOT_SPECIFIED, node, "Column name not specified at position %s", i + 1);
+                throw new SemanticException(COLUMN_NAME_NOT_SPECIFIED, node, "Column name not specified at position %s", descriptor.indexOf(field) + 1);
             }
             if (!names.add(fieldName.get())) {
                 throw new SemanticException(DUPLICATE_COLUMN_NAME, node, "Column name '%s' specified more than once", fieldName.get());
             }
         }
-
-        return new TupleDescriptor(Field.newUnqualified("rows", Type.BIGINT));
     }
 
     @Override
@@ -406,9 +445,12 @@ class StatementAnalyzer
         Query query = new Query(
                 Optional.<With>absent(),
                 new QuerySpecification(
-                        selectList(
-                                new SingleColumn(new StringLiteral(queryPlan), "Query Plan")),
-                        null,
+                        selectList(new AllColumns()),
+                        ImmutableList.of(aliased(
+                                values(row(new StringLiteral((queryPlan)))),
+                                "plan",
+                                ImmutableList.of("Query Plan")
+                        )),
                         Optional.<Expression>absent(),
                         ImmutableList.<Expression>of(),
                         Optional.<Expression>absent(),
@@ -451,7 +493,7 @@ class StatementAnalyzer
 
         analyzeWith(node, context);
 
-        TupleAnalyzer analyzer = new TupleAnalyzer(analysis, session, metadata, experimentalSyntaxEnabled);
+        TupleAnalyzer analyzer = new TupleAnalyzer(analysis, session, metadata, sqlParser, experimentalSyntaxEnabled);
         TupleDescriptor descriptor = analyzer.process(node.getQueryBody(), context);
         analyzeOrderBy(node, descriptor, context);
 
@@ -466,7 +508,7 @@ class StatementAnalyzer
     private List<FieldOrExpression> descriptorToFields(TupleDescriptor tupleDescriptor)
     {
         ImmutableList.Builder<FieldOrExpression> builder = ImmutableList.builder();
-        for (int fieldIndex = 0; fieldIndex < tupleDescriptor.getFields().size(); fieldIndex++) {
+        for (int fieldIndex = 0; fieldIndex < tupleDescriptor.getAllFieldCount(); fieldIndex++) {
             builder.add(new FieldOrExpression(fieldIndex));
         }
         return builder.build();
@@ -516,7 +558,7 @@ class StatementAnalyzer
                     // this is an ordinal in the output tuple
 
                     long ordinal = ((LongLiteral) expression).getValue();
-                    if (ordinal < 1 || ordinal > tupleDescriptor.getFields().size()) {
+                    if (ordinal < 1 || ordinal > tupleDescriptor.getVisibleFieldCount()) {
                         throw new SemanticException(INVALID_ORDINAL, expression, "ORDER BY position %s is not in select list", ordinal);
                     }
 
@@ -525,7 +567,14 @@ class StatementAnalyzer
                 else {
                     // otherwise, just use the expression as is
                     orderByField = new FieldOrExpression(expression);
-                    ExpressionAnalysis expressionAnalysis = Analyzer.analyzeExpression(session, metadata, tupleDescriptor, analysis, experimentalSyntaxEnabled, context, orderByField.getExpression());
+                    ExpressionAnalysis expressionAnalysis = ExpressionAnalyzer.analyzeExpression(session,
+                            metadata,
+                            sqlParser,
+                            tupleDescriptor,
+                            analysis,
+                            experimentalSyntaxEnabled,
+                            context,
+                            orderByField.getExpression());
                     analysis.addInPredicates(node, expressionAnalysis.getSubqueryInPredicates());
                 }
 

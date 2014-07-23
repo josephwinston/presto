@@ -13,39 +13,39 @@
  */
 package com.facebook.presto.block.dictionary;
 
-import com.facebook.presto.block.Block;
-import com.facebook.presto.block.RandomAccessBlock;
-import com.facebook.presto.serde.BlockEncoding;
-import com.facebook.presto.serde.DictionaryBlockEncoding;
-import com.facebook.presto.tuple.TupleInfo;
-import io.airlift.units.DataSize;
+import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.spi.block.BlockEncoding;
+import com.facebook.presto.spi.block.SortOrder;
+import com.facebook.presto.spi.type.Type;
+import com.google.common.primitives.Ints;
+import io.airlift.slice.Slice;
 
+import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
 
 public class DictionaryEncodedBlock
         implements Block
 {
-    private final Dictionary dictionary;
+    private final Block dictionary;
     private final Block idBlock;
 
-    public DictionaryEncodedBlock(Dictionary dictionary, Block idBlock)
+    public DictionaryEncodedBlock(Block dictionary, Block idBlock)
     {
-        checkNotNull(dictionary, "dictionary is null");
-        checkNotNull(idBlock, "block is null");
-        checkArgument(idBlock.getTupleInfo().equals(TupleInfo.SINGLE_LONG), "block must contain tuples with a single long value");
-
-        this.dictionary = dictionary;
-        this.idBlock = idBlock;
+        this.dictionary = checkNotNull(dictionary, "dictionary is null");
+        this.idBlock = checkNotNull(idBlock, "idBlock is null");
+        checkArgument(idBlock.getType().equals(BIGINT), "Expected bigint block but got %s block", idBlock.getType());
     }
 
     @Override
-    public TupleInfo getTupleInfo()
+    public Type getType()
     {
-        return dictionary.getTupleInfo();
+        return dictionary.getType();
     }
 
-    public Dictionary getDictionary()
+    public Block getDictionary()
     {
         return dictionary;
     }
@@ -62,10 +62,9 @@ public class DictionaryEncodedBlock
     }
 
     @Override
-    public DataSize getDataSize()
+    public int getSizeInBytes()
     {
-        // todo include dictionary size
-        return idBlock.getDataSize();
+        return Ints.checkedCast(dictionary.getSizeInBytes() + idBlock.getSizeInBytes());
     }
 
     @Override
@@ -81,15 +80,85 @@ public class DictionaryEncodedBlock
     }
 
     @Override
-    public RandomAccessBlock toRandomAccessBlock()
+    public boolean getBoolean(int position)
     {
-        // todo add a RandomAccessDictionaryEncodedBlock that contains a RandomAccessBlock for the ids
-        throw new UnsupportedOperationException();
+        return dictionary.getBoolean(getDictionaryKey(position));
     }
 
     @Override
-    public DictionaryEncodedBlockCursor cursor()
+    public long getLong(int position)
     {
-        return new DictionaryEncodedBlockCursor(dictionary, idBlock.cursor());
+        return dictionary.getLong(getDictionaryKey(position));
+    }
+
+    @Override
+    public double getDouble(int position)
+    {
+        return dictionary.getDouble(getDictionaryKey(position));
+    }
+
+    @Override
+    public Slice getSlice(int position)
+    {
+        return dictionary.getSlice(getDictionaryKey(position));
+    }
+
+    @Override
+    public Block getSingleValueBlock(int position)
+    {
+        return dictionary.getSingleValueBlock(getDictionaryKey(position));
+    }
+
+    @Override
+    public Object getObjectValue(ConnectorSession session, int position)
+    {
+        return dictionary.getObjectValue(session, getDictionaryKey(position));
+    }
+
+    @Override
+    public boolean isNull(int position)
+    {
+        return dictionary.isNull(getDictionaryKey(position));
+    }
+
+    @Override
+    public boolean equalTo(int position, Block otherBlock, int otherPosition)
+    {
+        return dictionary.equalTo(getDictionaryKey(position), otherBlock, otherPosition);
+    }
+
+    @Override
+    public boolean equalTo(int position, Slice otherSlice, int otherOffset, int otherLength)
+    {
+        return dictionary.equalTo(getDictionaryKey(position), otherSlice, otherOffset, otherLength);
+    }
+
+    @Override
+    public int hash(int position)
+    {
+        return dictionary.hash(getDictionaryKey(position));
+    }
+
+    @Override
+    public int compareTo(SortOrder sortOrder, int position, Block otherBlock, int otherPosition)
+    {
+        return dictionary.compareTo(sortOrder, getDictionaryKey(position), otherBlock, otherPosition);
+    }
+
+    @Override
+    public int compareTo(int position, Slice otherSlice, int otherOffset, int otherLength)
+    {
+        return dictionary.compareTo(getDictionaryKey(position), otherSlice, otherOffset, otherLength);
+    }
+
+    @Override
+    public void appendTo(int position, BlockBuilder blockBuilder)
+    {
+        dictionary.appendTo(getDictionaryKey(position), blockBuilder);
+    }
+
+    private int getDictionaryKey(int position)
+    {
+        return Ints.checkedCast(idBlock.getLong(position));
     }
 }

@@ -15,8 +15,10 @@ package com.facebook.presto.cli;
 
 import com.facebook.presto.cli.ClientOptions.OutputFormat;
 import com.facebook.presto.client.ClientSession;
+import com.facebook.presto.sql.parser.IdentifierSymbol;
 import com.facebook.presto.sql.parser.ParsingException;
 import com.facebook.presto.sql.parser.SqlParser;
+import com.facebook.presto.sql.parser.SqlParserOptions;
 import com.facebook.presto.sql.parser.StatementSplitter;
 import com.facebook.presto.sql.tree.UseCollection;
 import com.google.common.base.Charsets;
@@ -38,9 +40,11 @@ import javax.inject.Inject;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.util.EnumSet;
 
 import static com.facebook.presto.cli.Help.getHelpText;
 import static com.facebook.presto.sql.parser.StatementSplitter.Statement;
+import static com.facebook.presto.sql.parser.StatementSplitter.isEmptyStatement;
 import static com.facebook.presto.sql.parser.StatementSplitter.squeezeStatement;
 import static com.google.common.io.ByteStreams.nullOutputStream;
 import static io.airlift.log.Logging.Level;
@@ -52,6 +56,9 @@ public class Console
         implements Runnable
 {
     private static final String PROMPT_NAME = "presto";
+
+    // create a parser with all identifier options enabled, since this is only used for USE statements
+    private static final SqlParser SQL_PARSER = new SqlParser(new SqlParserOptions().allowIdentifierSymbol(EnumSet.allOf(IdentifierSymbol.class)));
 
     @Inject
     public HelpOption helpOption;
@@ -73,6 +80,10 @@ public class Console
         initializeLogging(session.isDebug());
 
         String query = clientOptions.execute;
+        if (hasQuery) {
+            query += ";";
+        }
+
         if (isFromFile) {
             if (hasQuery) {
                 throw new RuntimeException("both --execute and --file specified");
@@ -96,12 +107,11 @@ public class Console
         }
     }
 
-    @SuppressWarnings("fallthrough")
-    private void runConsole(QueryRunner queryRunner, ClientSession session)
+    private static void runConsole(QueryRunner queryRunner, ClientSession session)
     {
-        try (TableNameCompleter tableNameCompleter = new TableNameCompleter(clientOptions.toClientSession(), queryRunner);
+        try (TableNameCompleter tableNameCompleter = new TableNameCompleter(queryRunner);
                 LineReader reader = new LineReader(getHistory(), tableNameCompleter)) {
-            tableNameCompleter.populateCache(session.getSchema());
+            tableNameCompleter.populateCache();
             StringBuilder buffer = new StringBuilder();
             while (true) {
                 // read a line of input from user
@@ -153,7 +163,8 @@ public class Console
                     Optional<Object> statement = getParsedStatement(split.statement());
                     if (statement.isPresent() && isSessionParameterChange(statement.get())) {
                         session = processSessionParameterChange(statement.get(), session);
-                        queryRunner = QueryRunner.create(session);
+                        queryRunner.setSession(session);
+                        tableNameCompleter.populateCache();
                     }
                     else {
                         OutputFormat outputFormat = OutputFormat.ALIGNED;
@@ -179,10 +190,10 @@ public class Console
         }
     }
 
-    private Optional<Object> getParsedStatement(String statement)
+    private static Optional<Object> getParsedStatement(String statement)
     {
         try {
-            return Optional.of((Object) SqlParser.createStatement(statement));
+            return Optional.of((Object) SQL_PARSER.createStatement(statement));
         }
         catch (ParsingException e) {
             return Optional.absent();
@@ -192,27 +203,32 @@ public class Console
     static ClientSession processSessionParameterChange(Object parsedStatement, ClientSession session)
     {
         if (parsedStatement instanceof UseCollection) {
-            UseCollection useCollection = (UseCollection) parsedStatement;
-            if (useCollection.getType() == UseCollection.CollectionType.CATALOG) {
-                return ClientSession.withCatalog(session, useCollection.getCollection());
-            }
-            else if (useCollection.getType() == UseCollection.CollectionType.SCHEMA) {
-                return ClientSession.withSchema(session, useCollection.getCollection());
+            UseCollection use = (UseCollection) parsedStatement;
+            switch (use.getType()) {
+                case CATALOG:
+                    return ClientSession.withCatalog(session, use.getCollection());
+                case SCHEMA:
+                    return ClientSession.withSchema(session, use.getCollection());
             }
         }
         return session;
     }
 
-    static boolean isSessionParameterChange(Object statement)
+    private static boolean isSessionParameterChange(Object statement)
     {
         return statement instanceof UseCollection;
     }
 
     private static void executeCommand(QueryRunner queryRunner, String query, OutputFormat outputFormat)
     {
-        StatementSplitter splitter = new StatementSplitter(query + ";");
+        StatementSplitter splitter = new StatementSplitter(query);
         for (Statement split : splitter.getCompleteStatements()) {
-            process(queryRunner, split.statement(), outputFormat, false);
+            if (!isEmptyStatement(split.statement())) {
+                process(queryRunner, split.statement(), outputFormat, false);
+            }
+        }
+        if (!isEmptyStatement(splitter.getPartialStatement())) {
+            System.err.println("Non-terminated statement: " + splitter.getPartialStatement());
         }
     }
 

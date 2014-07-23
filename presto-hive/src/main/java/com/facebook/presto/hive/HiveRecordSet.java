@@ -15,18 +15,15 @@ package com.facebook.presto.hive;
 
 import com.facebook.presto.hadoop.HadoopFileSystemCache;
 import com.facebook.presto.hadoop.HadoopNative;
-import com.facebook.presto.spi.ColumnType;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.RecordSet;
+import com.facebook.presto.spi.type.Type;
 import com.google.common.base.Optional;
-import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.serde2.ColumnProjectionUtils;
-import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.StructField;
@@ -35,6 +32,7 @@ import org.apache.hadoop.mapred.InputFormat;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.RecordReader;
 import org.apache.hadoop.mapred.Reporter;
+import org.joda.time.DateTimeZone;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -66,18 +64,20 @@ public class HiveRecordSet
 
     private final HiveSplit split;
     private final List<HiveColumnHandle> columns;
-    private final List<ColumnType> columnTypes;
+    private final List<Type> columnTypes;
     private final List<Integer> readHiveColumnIndexes;
+    private final Path path;
     private final Configuration configuration;
-    private final Path wrappedPath;
     private final List<HiveRecordCursorProvider> cursorProviders;
+    private final DateTimeZone timeZone;
 
-    public HiveRecordSet(HdfsEnvironment hdfsEnvironment, HiveSplit split, List<HiveColumnHandle> columns, List<HiveRecordCursorProvider> cursorProviders)
+    public HiveRecordSet(HdfsEnvironment hdfsEnvironment, HiveSplit split, List<HiveColumnHandle> columns, List<HiveRecordCursorProvider> cursorProviders, DateTimeZone timeZone)
     {
         this.split = checkNotNull(split, "split is null");
         this.columns = ImmutableList.copyOf(checkNotNull(columns, "columns is null"));
         this.columnTypes = ImmutableList.copyOf(Iterables.transform(columns, nativeTypeGetter()));
         this.cursorProviders = ImmutableList.copyOf(checkNotNull(cursorProviders, "cursor providers is null"));
+        this.timeZone = checkNotNull(timeZone, "timeZone is null");
 
         // determine which hive columns we will read
         List<HiveColumnHandle> readColumns = ImmutableList.copyOf(filter(columns, not(isPartitionKeyPredicate())));
@@ -89,16 +89,15 @@ public class HiveRecordSet
         }
         readHiveColumnIndexes = new ArrayList<>(transform(readColumns, hiveColumnIndexGetter()));
 
-        Path path = new Path(split.getPath());
+        this.path = new Path(split.getPath());
         this.configuration = hdfsEnvironment.getConfiguration(path);
-        this.wrappedPath = hdfsEnvironment.wrapInputPath(path);
 
         String nullSequence = split.getSchema().getProperty(SERIALIZATION_NULL_FORMAT);
         checkState(nullSequence == null || nullSequence.equals("\\N"), "Only '\\N' supported as null specifier, was '%s'", nullSequence);
     }
 
     @Override
-    public List<ColumnType> getColumnTypes()
+    public List<Type> getColumnTypes()
     {
         return columnTypes;
     }
@@ -109,10 +108,10 @@ public class HiveRecordSet
         // Tell hive the columns we would like to read, this lets hive optimize reading column oriented files
         ColumnProjectionUtils.setReadColumnIDs(configuration, readHiveColumnIndexes);
 
-        RecordReader<?, ?> recordReader = createRecordReader(split, configuration, wrappedPath);
+        RecordReader<?, ?> recordReader = createRecordReader(split, configuration, path);
 
         for (HiveRecordCursorProvider provider : cursorProviders) {
-            Optional<HiveRecordCursor> cursor = provider.createHiveRecordCursor(split, recordReader, columns);
+            Optional<HiveRecordCursor> cursor = provider.createHiveRecordCursor(split, recordReader, columns, timeZone);
             if (cursor.isPresent()) {
                 return cursor.get();
             }
@@ -123,19 +122,14 @@ public class HiveRecordSet
 
     private static HiveColumnHandle getFirstPrimitiveColumn(String clientId, Properties schema)
     {
-        try {
-            int index = 0;
-            for (StructField field : getTableObjectInspector(schema).getAllStructFieldRefs()) {
-                if (field.getFieldObjectInspector().getCategory() == ObjectInspector.Category.PRIMITIVE) {
-                    PrimitiveObjectInspector inspector = (PrimitiveObjectInspector) field.getFieldObjectInspector();
-                    HiveType hiveType = HiveType.getSupportedHiveType(inspector.getPrimitiveCategory());
-                    return new HiveColumnHandle(clientId, field.getFieldName(), index, hiveType, index, false);
-                }
-                index++;
+        int index = 0;
+        for (StructField field : getTableObjectInspector(schema).getAllStructFieldRefs()) {
+            if (field.getFieldObjectInspector().getCategory() == ObjectInspector.Category.PRIMITIVE) {
+                PrimitiveObjectInspector inspector = (PrimitiveObjectInspector) field.getFieldObjectInspector();
+                HiveType hiveType = HiveType.getSupportedHiveType(inspector.getPrimitiveCategory());
+                return new HiveColumnHandle(clientId, field.getFieldName(), index, hiveType, index, false);
             }
-        }
-        catch (MetaException | SerDeException | RuntimeException e) {
-            throw Throwables.propagate(e);
+            index++;
         }
 
         throw new IllegalStateException("Table doesn't have any PRIMITIVE columns");

@@ -56,6 +56,8 @@ tokens {
     SIMPLE_CASE;
     SEARCHED_CASE;
     FUNCTION_CALL;
+    LITERAL;
+    TIME_ZONE_CONVERSION;
     WINDOW;
     PARTITION_BY;
     UNBOUNDED_PRECEDING;
@@ -73,6 +75,9 @@ tokens {
     USE_SCHEMA;
     CREATE_TABLE;
     DROP_TABLE;
+    CREATE_VIEW;
+    DROP_VIEW;
+    OR_REPLACE;
     TABLE_ELEMENT_LIST;
     COLUMN_DEF;
     NOT_NULL;
@@ -88,6 +93,8 @@ tokens {
 
 @lexer::header {
     package com.facebook.presto.sql.parser;
+
+    import java.util.EnumSet;
 }
 
 @members {
@@ -114,14 +121,18 @@ tokens {
         if (e.token.getType() == DIGIT_IDENT) {
             return "identifiers must not start with a digit; surround the identifier with double quotes";
         }
-        if (e.token.getType() == COLON_IDENT) {
-            return "identifiers must not contain a colon; use '@' instead of ':' for table links";
-        }
         return super.getErrorMessage(e, tokenNames);
     }
 }
 
 @lexer::members {
+    private EnumSet<IdentifierSymbol> allowedIdentifierSymbols = EnumSet.noneOf(IdentifierSymbol.class);
+
+    public void setAllowedIdentifierSymbols(EnumSet<IdentifierSymbol> allowedIdentifierSymbols)
+    {
+        this.allowedIdentifierSymbols = EnumSet.copyOf(allowedIdentifierSymbols);
+    }
+
     @Override
     public void reportError(RecognitionException e)
     {
@@ -156,6 +167,8 @@ statement
     | useCollectionStmt
     | createTableStmt
     | dropTableStmt
+    | createViewStmt
+    | dropViewStmt
     ;
 
 query
@@ -398,14 +411,23 @@ numericTerm
     ;
 
 numericFactor
-    : '+'? exprPrimary -> exprPrimary
-    | '-' exprPrimary  -> ^(NEGATIVE exprPrimary)
+    : exprWithTimeZone
+    | '+' numericFactor -> numericFactor
+    | '-' numericFactor -> ^(NEGATIVE numericFactor)
+    ;
+
+exprWithTimeZone
+    : (exprPrimary -> exprPrimary)
+      (
+        // todo this should have a full tree node to preserve the syntax
+        AT TIME ZONE STRING           -> ^(FUNCTION_CALL ^(QNAME IDENT["at_time_zone"]) $exprWithTimeZone STRING)
+      | AT TIME ZONE intervalLiteral    -> ^(FUNCTION_CALL ^(QNAME IDENT["at_time_zone"]) $exprWithTimeZone intervalLiteral)
+      )?
     ;
 
 exprPrimary
     : NULL
-    | (dateValue) => dateValue
-    | (intervalValue) => intervalValue
+    | (literal) => literal
     | qnameOrFunction
     | specialFunction
     | number
@@ -451,14 +473,20 @@ subquery
     : '(' query ')' -> query
     ;
 
-dateValue
-    : DATE STRING      -> ^(DATE STRING)
-    | TIME STRING      -> ^(TIME STRING)
-    | TIMESTAMP STRING -> ^(TIMESTAMP STRING)
+literal
+    : (VARCHAR) => VARCHAR STRING     -> ^(LITERAL IDENT["VARCHAR"] STRING)
+    | (BIGINT) => BIGINT STRING       -> ^(LITERAL IDENT["BIGINT"] STRING)
+    | (DOUBLE) => DOUBLE STRING       -> ^(LITERAL IDENT["DOUBLE"] STRING)
+    | (BOOLEAN) => BOOLEAN STRING     -> ^(LITERAL IDENT["BOOLEAN"] STRING)
+    | (DATE) => DATE STRING           -> ^(LITERAL IDENT["DATE"] STRING)
+    | (TIME) => TIME STRING           -> ^(TIME STRING)
+    | (TIMESTAMP) => TIMESTAMP STRING -> ^(TIMESTAMP STRING)
+    | (INTERVAL) => intervalLiteral
+    | ident STRING                    -> ^(LITERAL ident STRING)
     ;
 
-intervalValue
-    : INTERVAL intervalSign? STRING intervalQualifier -> ^(INTERVAL STRING intervalQualifier intervalSign?)
+intervalLiteral
+    : INTERVAL intervalSign? STRING s=intervalField ( TO e=intervalField )? -> ^(INTERVAL STRING intervalSign? $s $e?)
     ;
 
 intervalSign
@@ -466,30 +494,31 @@ intervalSign
     | '-' -> NEGATIVE
     ;
 
-intervalQualifier
-    : nonSecond ('(' integer ')')?                 -> ^(nonSecond integer?)
-    | SECOND ('(' p=integer (',' s=integer)? ')')? -> ^(SECOND $p? $s?)
-    ;
-
-nonSecond
-    : YEAR | MONTH | DAY | HOUR | MINUTE
+intervalField
+    : YEAR | MONTH | DAY | HOUR | MINUTE | SECOND
     ;
 
 specialFunction
     : CURRENT_DATE
     | CURRENT_TIME ('(' integer ')')?              -> ^(CURRENT_TIME integer?)
     | CURRENT_TIMESTAMP ('(' integer ')')?         -> ^(CURRENT_TIMESTAMP integer?)
+    | LOCALTIME ('(' integer ')')?                 -> ^(LOCALTIME integer?)
+    | LOCALTIMESTAMP ('(' integer ')')?            -> ^(LOCALTIMESTAMP integer?)
     | SUBSTRING '(' expr FROM expr (FOR expr)? ')' -> ^(FUNCTION_CALL ^(QNAME IDENT["substr"]) expr expr expr?)
     | EXTRACT '(' ident FROM expr ')'              -> ^(EXTRACT ident expr)
-    | CAST '(' expr AS type ')'                    -> ^(CAST expr IDENT[$type.text])
+    | CAST '(' expr AS type ')'                    -> ^(CAST expr type)
+    | TRY_CAST '(' expr AS type ')'                -> ^(TRY_CAST expr type)
     ;
 
 // TODO: this should be 'dataType', which supports arbitrary type specifications. For now we constrain to simple types
 type
-    : VARCHAR
-    | BIGINT
-    | DOUBLE
-    | BOOLEAN
+    : VARCHAR                    -> IDENT["VARCHAR"]
+    | BIGINT                     -> IDENT["BIGINT"]
+    | DOUBLE                     -> IDENT["DOUBLE"]
+    | BOOLEAN                    -> IDENT["BOOLEAN"]
+    | TIME WITH TIME ZONE        -> IDENT["TIME WITH TIME ZONE"]
+    | TIMESTAMP WITH TIME ZONE   -> IDENT["TIMESTAMP WITH TIME ZONE"]
+    | ident
     ;
 
 caseExpression
@@ -604,6 +633,18 @@ createTableStmt
     : CREATE TABLE qname s=tableContentsSource -> ^(CREATE_TABLE qname $s)
     ;
 
+createViewStmt
+    : CREATE r=orReplace? VIEW qname s=tableContentsSource -> ^(CREATE_VIEW qname $s $r?)
+    ;
+
+dropViewStmt
+    : DROP VIEW qname -> ^(DROP_VIEW qname)
+    ;
+
+orReplace
+    : OR REPLACE -> OR_REPLACE
+    ;
+
 tableContentsSource
     : AS query -> query
     ;
@@ -688,8 +729,9 @@ nonReserved
     | DATE | TIME | TIMESTAMP | INTERVAL
     | YEAR | MONTH | DAY | HOUR | MINUTE | SECOND
     | EXPLAIN | FORMAT | TYPE | TEXT | GRAPHVIZ | LOGICAL | DISTRIBUTED
-    | TABLESAMPLE | SYSTEM | BERNOULLI | POISSONIZED | USE | SCHEMA | CATALOG | JSON
+    | TABLESAMPLE | SYSTEM | BERNOULLI | POISSONIZED | USE | SCHEMA | CATALOG | JSON | TO
     | RESCALED | APPROXIMATE | AT | CONFIDENCE
+    | VIEW | REPLACE
     ;
 
 SELECT: 'SELECT';
@@ -735,9 +777,12 @@ DAY: 'DAY';
 HOUR: 'HOUR';
 MINUTE: 'MINUTE';
 SECOND: 'SECOND';
+ZONE: 'ZONE';
 CURRENT_DATE: 'CURRENT_DATE';
 CURRENT_TIME: 'CURRENT_TIME';
 CURRENT_TIMESTAMP: 'CURRENT_TIMESTAMP';
+LOCALTIME: 'LOCALTIME';
+LOCALTIMESTAMP: 'LOCALTIMESTAMP';
 EXTRACT: 'EXTRACT';
 COALESCE: 'COALESCE';
 NULLIF: 'NULLIF';
@@ -771,6 +816,8 @@ RECURSIVE: 'RECURSIVE';
 VALUES: 'VALUES';
 CREATE: 'CREATE';
 TABLE: 'TABLE';
+VIEW: 'VIEW';
+REPLACE: 'REPLACE';
 CHAR: 'CHAR';
 CHARACTER: 'CHARACTER';
 VARYING: 'VARYING';
@@ -795,6 +842,7 @@ JSON: 'JSON';
 LOGICAL: 'LOGICAL';
 DISTRIBUTED: 'DISTRIBUTED';
 CAST: 'CAST';
+TRY_CAST: 'TRY_CAST';
 SHOW: 'SHOW';
 TABLES: 'TABLES';
 SCHEMA: 'SCHEMA';
@@ -809,6 +857,7 @@ DROP: 'DROP';
 UNION: 'UNION';
 EXCEPT: 'EXCEPT';
 INTERSECT: 'INTERSECT';
+TO: 'TO';
 SYSTEM: 'SYSTEM';
 BERNOULLI: 'BERNOULLI';
 POISSONIZED: 'POISSONIZED';
@@ -840,11 +889,12 @@ DECIMAL_VALUE
     ;
 
 IDENT
-    : (LETTER | '_') (LETTER | DIGIT | '_' | '\@')*
+    : (LETTER | '_') (LETTER | DIGIT | '_' | '\@' | ':')*
+        { IdentifierSymbol.validateIdentifier(input, getText(), allowedIdentifierSymbols); }
     ;
 
 DIGIT_IDENT
-    : DIGIT (LETTER | DIGIT | '_' | '\@')+
+    : DIGIT (LETTER | DIGIT | '_' | '\@' | ':')+
     ;
 
 QUOTED_IDENT
@@ -855,10 +905,6 @@ QUOTED_IDENT
 BACKQUOTED_IDENT
     : '`' ( ~'`' | '``' )* '`'
         { setText(getText().substring(1, getText().length() - 1).replace("``", "`")); }
-    ;
-
-COLON_IDENT
-    : (LETTER | DIGIT | '_' )+ ':' (LETTER | DIGIT | '_' )+
     ;
 
 fragment EXPONENT

@@ -14,43 +14,66 @@
 package com.facebook.presto.spi;
 
 import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+
+import static java.util.Collections.emptyList;
+import static java.util.Collections.emptyMap;
 
 public abstract class ReadOnlyConnectorMetadata
         implements ConnectorMetadata
 {
     @Override
-    public final TableHandle createTable(ConnectorTableMetadata tableMetadata)
+    public final ConnectorTableHandle createTable(ConnectorSession session, ConnectorTableMetadata tableMetadata)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public final void dropTable(TableHandle tableHandle)
+    public final void dropTable(ConnectorTableHandle tableHandle)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public boolean canHandle(OutputTableHandle tableHandle)
+    public final boolean canCreateSampledTables(ConnectorSession session)
     {
         return false;
     }
 
     @Override
-    public final boolean canCreateSampledTables()
-    {
-        return false;
-    }
-
-    @Override
-    public final OutputTableHandle beginCreateTable(ConnectorTableMetadata tableMetadata)
+    public final ConnectorOutputTableHandle beginCreateTable(ConnectorSession session, ConnectorTableMetadata tableMetadata)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public final void commitCreateTable(OutputTableHandle tableHandle, Collection<String> fragments)
+    public final void commitCreateTable(ConnectorOutputTableHandle tableHandle, Collection<String> fragments)
     {
         throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void createView(ConnectorSession session, SchemaTableName viewName, String viewData, boolean replace)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void dropView(ConnectorSession session, SchemaTableName viewName)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public List<SchemaTableName> listViews(ConnectorSession session, String schemaNameOrNull)
+    {
+        return emptyList();
+    }
+
+    @Override
+    public Map<SchemaTableName, String> getViews(ConnectorSession session, SchemaTablePrefix prefix)
+    {
+        return emptyMap();
     }
 }

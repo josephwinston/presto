@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.block.BlockCursor;
-import com.facebook.presto.tuple.TupleInfo;
+import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
 
@@ -32,20 +32,20 @@ public class MaterializeSampleOperator
     {
         private final int operatorId;
         private final int sampleWeightChannel;
-        private final List<TupleInfo> tupleInfos;
+        private final List<Type> types;
         private boolean closed;
 
-        public MaterializeSampleOperatorFactory(int operatorId, List<TupleInfo> outputTupleInfos, int sampleWeightChannel)
+        public MaterializeSampleOperatorFactory(int operatorId, List<? extends Type> outputTypes, int sampleWeightChannel)
         {
             this.operatorId = operatorId;
             this.sampleWeightChannel = sampleWeightChannel;
-            this.tupleInfos = ImmutableList.copyOf(checkNotNull(outputTupleInfos, "outputTupleInfos is null"));
+            this.types = ImmutableList.copyOf(checkNotNull(outputTypes, "outputTypes is null"));
         }
 
         @Override
-        public List<TupleInfo> getTupleInfos()
+        public List<Type> getTypes()
         {
-            return tupleInfos;
+            return types;
         }
 
         @Override
@@ -53,7 +53,7 @@ public class MaterializeSampleOperator
         {
             checkState(!closed, "Factory is already closed");
             OperatorContext operatorContext = driverContext.addOperatorContext(operatorId, MaterializeSampleOperator.class.getSimpleName());
-            return new MaterializeSampleOperator(operatorContext, tupleInfos, sampleWeightChannel);
+            return new MaterializeSampleOperator(operatorContext, types, sampleWeightChannel);
         }
 
         @Override
@@ -64,21 +64,22 @@ public class MaterializeSampleOperator
     }
 
     private final OperatorContext operatorContext;
-    private final List<TupleInfo> tupleInfos;
+    private final List<Type> types;
     private final int sampleWeightChannel;
     private boolean finishing;
-    private BlockCursor[] cursors;
-    private BlockCursor sampleWeightCursor;
+    private int position = -1;
+    private Block[] blocks;
+    private Block sampleWeightBlock;
     private long remainingWeight;
     private PageBuilder pageBuilder;
 
-    public MaterializeSampleOperator(OperatorContext operatorContext, List<TupleInfo> tupleInfos, int sampleWeightChannel)
+    public MaterializeSampleOperator(OperatorContext operatorContext, List<Type> types, int sampleWeightChannel)
     {
         this.operatorContext = checkNotNull(operatorContext, "operatorContext is null");
         this.sampleWeightChannel = sampleWeightChannel;
-        this.tupleInfos = ImmutableList.copyOf(checkNotNull(tupleInfos, "tupleInfos is null"));
-        this.pageBuilder = new PageBuilder(tupleInfos);
-        this.cursors = new BlockCursor[tupleInfos.size()];
+        this.types = ImmutableList.copyOf(checkNotNull(types, "types is null"));
+        this.pageBuilder = new PageBuilder(types);
+        this.blocks = new Block[types.size()];
     }
 
     @Override
@@ -88,9 +89,9 @@ public class MaterializeSampleOperator
     }
 
     @Override
-    public List<TupleInfo> getTupleInfos()
+    public List<Type> getTypes()
     {
-        return tupleInfos;
+        return types;
     }
 
     @Override
@@ -102,7 +103,7 @@ public class MaterializeSampleOperator
     @Override
     public boolean isFinished()
     {
-        return finishing && sampleWeightCursor == null && pageBuilder.isEmpty();
+        return finishing && sampleWeightBlock == null && pageBuilder.isEmpty();
     }
 
     @Override
@@ -114,7 +115,7 @@ public class MaterializeSampleOperator
     @Override
     public boolean needsInput()
     {
-        if (finishing || sampleWeightCursor != null) {
+        if (finishing || sampleWeightBlock != null) {
             return false;
         }
         return true;
@@ -125,20 +126,16 @@ public class MaterializeSampleOperator
     {
         checkNotNull(page, "page is null");
         checkState(!finishing, "Operator is finishing");
-        checkState(sampleWeightCursor == null, "Current page has not been completely processed yet");
+        checkState(sampleWeightBlock == null, "Current page has not been completely processed yet");
 
-        BlockCursor[] cursors = new BlockCursor[page.getChannelCount()];
-        for (int i = 0; i < cursors.length; i++) {
-            cursors[i] = page.getBlock(i).cursor();
-        }
+        this.position = -1;
+        this.sampleWeightBlock = page.getBlock(sampleWeightChannel);
 
-        this.sampleWeightCursor = cursors[sampleWeightChannel];
-
-        for (int i = 0, j = 0; i < cursors.length; i++) {
+        for (int i = 0, j = 0; i < page.getChannelCount(); i++) {
             if (i == sampleWeightChannel) {
                 continue;
             }
-            this.cursors[j] = cursors[i];
+            this.blocks[j] = page.getBlock(i);
             j++;
         }
     }
@@ -150,29 +147,23 @@ public class MaterializeSampleOperator
             return true;
         }
 
-        if (sampleWeightCursor == null) {
+        if (sampleWeightBlock == null) {
             return false;
         }
 
-        boolean advanced;
         // Read rows until we find one that has a non-zero weight
-        do {
-            advanced = sampleWeightCursor.advanceNextPosition();
-            for (BlockCursor cursor : cursors) {
-                checkState(advanced == cursor.advanceNextPosition());
+        position++;
+        while (position < sampleWeightBlock.getPositionCount()) {
+            checkState(!(sampleWeightBlock.isNull(position)), "Encountered NULL sample weight");
+            if (sampleWeightBlock.getLong(position) != 0) {
+                remainingWeight = sampleWeightBlock.getLong(position) - 1;
+                return true;
             }
-            checkState(!(advanced && sampleWeightCursor.isNull()), "Encountered NULL sample weight");
-        } while(advanced && sampleWeightCursor.getLong() == 0);
-
-        if (!advanced) {
-            sampleWeightCursor = null;
-            Arrays.fill(cursors, null);
+            position++;
         }
-        else {
-            remainingWeight = sampleWeightCursor.getLong() - 1;
-        }
-
-        return advanced;
+        sampleWeightBlock = null;
+        Arrays.fill(blocks, null);
+        return false;
     }
 
     @Override
@@ -182,13 +173,13 @@ public class MaterializeSampleOperator
             // We might be outputting empty rows, if $sampleWeight is the only column (such as in a COUNT(*) query)
             pageBuilder.declarePosition();
 
-            for (int i = 0; i < cursors.length; i++) {
-                pageBuilder.getBlockBuilder(i).append(cursors[i]);
+            for (int i = 0; i < blocks.length; i++) {
+                blocks[i].appendTo(position, pageBuilder.getBlockBuilder(i));
             }
         }
 
         // only flush full pages unless we are done
-        if (pageBuilder.isFull() || (finishing && !pageBuilder.isEmpty() && sampleWeightCursor == null)) {
+        if (pageBuilder.isFull() || (finishing && !pageBuilder.isEmpty() && sampleWeightBlock == null)) {
             Page page = pageBuilder.build();
             pageBuilder.reset();
             return page;
